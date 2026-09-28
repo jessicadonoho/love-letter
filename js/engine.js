@@ -4,18 +4,23 @@
 
 export const CARDS = [
   { rank: 0, name: 'Spy',        count: 2, text: 'No effect when played. At round end, if you are the only player still in who played or discarded a Spy, gain 1 token.' },
-  { rank: 1, name: 'Guard',      count: 6, text: 'Name a non-Guard card and choose another player. If they hold it, they are out.' },
-  { rank: 2, name: 'Priest',     count: 2, text: 'Look at another player\'s hand.' },
-  { rank: 3, name: 'Baron',      count: 2, text: 'Compare hands with another player. Lower card is out.' },
+  { rank: 1, name: 'Maid',       count: 6, text: 'Name a non-Maid card and choose another player. If they hold it, they are out.' },
+  { rank: 2, name: 'Assassin',   count: 2, text: 'Look at another player\'s hand.' },
+  { rank: 3, name: 'Mercenary',  count: 2, text: 'Compare hands with another player. Lower card is out.' },
   { rank: 4, name: 'Handmaid',   count: 2, text: 'You can\'t be targeted until your next turn.' },
-  { rank: 5, name: 'Prince',     count: 2, text: 'Choose any player (even yourself). They discard their hand and draw a new card.' },
+  { rank: 5, name: 'Viscount',   count: 2, text: 'Choose any player (even yourself). They discard their hand and draw a new card.' },
   { rank: 6, name: 'Chancellor', count: 2, text: 'Draw 2 cards. Keep 1 of your 3 cards and put the other 2 on the bottom of the deck.' },
   { rank: 7, name: 'King',       count: 1, text: 'Trade hands with another player.' },
-  { rank: 8, name: 'Countess',   count: 1, text: 'Must be played if you also hold the King or a Prince.' },
+  { rank: 8, name: 'Countess',   count: 1, text: 'If you hold a King, Viscount, or Princess, you must play this card.' },
   { rank: 9, name: 'Princess',   count: 1, text: 'If you play or discard her, you are out.' },
 ];
 
 export const cardName = (rank) => CARDS[rank].name;
+export const cardLabel = (rank) => `${rank} ${cardName(rank)}`;
+// Holding the Countess (8) with any of these ranks forces you to play the Countess.
+export const COUNTESS = 8;
+export const FORCES_COUNTESS = [5, 7, 9];
+export const FORCED_PLAY_REASON = `If you hold a King, ${cardName(5)}, or Princess, you must play the Countess.`;
 export const TOKENS_TO_WIN = { 2: 6, 3: 5, 4: 4, 5: 3, 6: 3 };
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 6;
@@ -35,20 +40,57 @@ export function createGame() {
     roundResult: null,
     winnerIds: [],
     log: [], seq: 0,
+    events: [],            // effect feedback for popups: {seq, type, to, ...}
   };
 }
 
 export function addPlayer(g, id, name) {
-  if (g.players.some((p) => p.id === id)) return { ok: true };
+  const existing = g.players.find((p) => p.id === id);
+  if (existing) return existing.left ? { ok: false, error: 'You left this game. Wait for the host to start a new one.' } : { ok: true };
   if (g.phase !== 'lobby') return { ok: false, error: 'Game already started.' };
   if (g.players.length >= MAX_PLAYERS) return { ok: false, error: 'Room is full (6 players max).' };
-  g.players.push({ id, name: cleanName(name), tokens: 0, hand: [], discards: [], alive: true, protected: false });
+  g.players.push({ id, name: cleanName(name), tokens: 0, hand: [], discards: [], alive: true, protected: false, left: false });
   return { ok: true };
 }
 
 export function removePlayer(g, id) {
   if (g.phase !== 'lobby') return;
   g.players = g.players.filter((p) => p.id !== id);
+}
+
+/** Players still seated in the game (not departed). */
+const seated = (g) => g.players.filter((p) => !p.left);
+
+/**
+ * A player leaves mid-game (explicitly, or removed by the host). In the lobby they are
+ * removed outright. Otherwise they stay in `players` (so turn indexes stay valid) but are
+ * marked `left`, knocked out of the round, and never get another turn. Idempotent: a
+ * repeated leave for the same player changes nothing.
+ */
+export function leavePlayer(g, id) {
+  const p = byId(g, id);
+  if (!p) return { ok: true, changed: false };
+  if (g.phase === 'lobby') { removePlayer(g, id); return { ok: true, changed: true }; }
+  if (p.left) return { ok: true, changed: false };
+  const inRound = g.phase === 'turn' || g.phase === 'chancellor';
+  const hadTurn = inRound && current(g) === p;
+  p.left = true;
+  say(g, `${p.name} left the game.`);
+  emit(g, 'left', { player: p.id, name: p.name });
+  if (inRound && p.alive) eliminate(g, p, 'left the game', { quiet: true });
+  p.alive = false;
+  p.protected = false;
+
+  if (seated(g).length < MIN_PLAYERS) {
+    if (inRound) endRound(g);
+    if (g.phase !== 'gameOver') finishGame(g, 'Not enough players left to continue.');
+  } else if (hadTurn) {
+    if (g.phase === 'chancellor') g.phase = 'turn';
+    endTurn(g);              // advance exactly once, to the next eligible player
+  } else if (inRound && g.players.filter((q) => q.alive).length <= 1) {
+    endRound(g);
+  }
+  return { ok: true, changed: true };
 }
 
 function cleanName(name) {
@@ -64,6 +106,7 @@ function shuffle(arr, rng) {
 }
 
 export function startGame(g, rng = Math.random) {
+  g.players = seated(g);   // a new game drops anyone who left the last one
   if (g.players.length < MIN_PLAYERS) return { ok: false, error: 'Need at least 2 players.' };
   g.players.forEach((p) => { p.tokens = 0; });
   g.round = 0; g.winnerIds = []; g.lastWinners = []; g.log = [];
@@ -82,14 +125,15 @@ export function startRound(g, rng = Math.random) {
   g.round += 1;
   g.roundResult = null;
   for (const p of g.players) {
-    p.hand = [g.deck.pop()];
+    p.hand = p.left ? [] : [g.deck.pop()];
     p.discards = [];
-    p.alive = true;
+    p.alive = !p.left;
     p.protected = false;
   }
   // Previous round's winner starts; otherwise random.
-  const first = g.players.findIndex((p) => g.lastWinners.includes(p.id));
-  g.turn = first >= 0 ? first : Math.floor(rng() * g.players.length);
+  const first = g.players.findIndex((p) => !p.left && g.lastWinners.includes(p.id));
+  const eligible = g.players.map((p, i) => (p.left ? -1 : i)).filter((i) => i >= 0);
+  g.turn = first >= 0 ? first : eligible[Math.floor(rng() * eligible.length)];
   say(g, `— Round ${g.round} —`);
   if (g.faceUp.length) say(g, `Set aside face up: ${g.faceUp.map((c) => cardName(c.rank)).join(', ')}.`);
   beginTurn(g);
@@ -102,6 +146,13 @@ function say(g, text, to = null) {
   if (g.log.length > 200) g.log.splice(0, g.log.length - 200);
 }
 
+/** Queue a card-effect event for popups. `to` limits who can see it (null = everyone). */
+function emit(g, type, data, to = null) {
+  if (!g.events) g.events = [];   // games saved before events existed
+  g.events.push({ seq: ++g.seq, type, to, ...data });
+  if (g.events.length > 50) g.events.splice(0, g.events.length - 50);
+}
+
 const current = (g) => g.players[g.turn];
 const byId = (g, id) => g.players.find((p) => p.id === id);
 
@@ -112,13 +163,14 @@ function beginTurn(g) {
   g.phase = 'turn';
 }
 
-function eliminate(g, p, why) {
+function eliminate(g, p, why, { quiet = false } = {}) {
   p.alive = false;
   p.protected = false;
   for (const c of p.hand) p.discards.push(c);
   const revealed = p.hand.map((c) => cardName(c.rank));
   p.hand = [];
   say(g, `${p.name} is out${why ? ` (${why})` : ''}${revealed.length ? ` — discarded ${revealed.join(', ')}` : ''}.`);
+  if (!quiet) emit(g, 'eliminated', { player: p.id, name: p.name, why });
 }
 
 /** Valid targets for playing `rank` by player `pid`. Empty array = card has no effect. */
@@ -129,11 +181,11 @@ export function validTargets(g, pid, rank) {
   return mode === 'any' ? [...others, pid] : others;
 }
 
-/** True if the Countess rule forbids playing this card. */
-function countessBlocks(hand, card) {
-  const hasCountess = hand.some((c) => c.rank === 8);
-  const hasRoyal = hand.some((c) => c.rank === 5 || c.rank === 7);
-  return hasCountess && hasRoyal && card.rank !== 8;
+/** True if the Countess rule forbids playing this card (you hold the Countess plus a King, Viscount, or Princess). */
+export function countessBlocks(hand, card) {
+  const hasCountess = hand.some((c) => c.rank === COUNTESS);
+  const hasForcing = hand.some((c) => FORCES_COUNTESS.includes(c.rank));
+  return hasCountess && hasForcing && card.rank !== COUNTESS;
 }
 
 // ---------- actions ----------
@@ -154,7 +206,7 @@ function playCard(g, pid, a) {
   if (a.type !== 'play') return { ok: false, error: 'Unexpected move.' };
   const card = me.hand.find((c) => c.id === a.cardId);
   if (!card) return { ok: false, error: 'You don\'t have that card.' };
-  if (countessBlocks(me.hand, card)) return { ok: false, error: 'You must play the Countess.' };
+  if (countessBlocks(me.hand, card)) return { ok: false, error: FORCED_PLAY_REASON };
 
   const targets = validTargets(g, pid, card.rank);
   let target = null;
@@ -164,7 +216,7 @@ function playCard(g, pid, a) {
   }
   if (card.rank === 1 && target) {
     const guess = Number(a.guess);
-    if (!Number.isInteger(guess) || guess < 0 || guess > 9 || guess === 1) return { ok: false, error: 'Name a card other than Guard.' };
+    if (!Number.isInteger(guess) || guess < 0 || guess > 9 || guess === 1) return { ok: false, error: `Name a card other than ${cardName(1)}.` };
   }
 
   // Commit: move card to discards.
@@ -178,37 +230,46 @@ function playCard(g, pid, a) {
       say(g, `${me.name} played Spy.`);
       break;
     case 1:
-      if (noEffect) { say(g, `${me.name} played Guard — no one to target.`); break; }
-      say(g, `${me.name} played Guard on ${target.name}, naming ${cardName(a.guess)}.`);
-      if (target.hand[0].rank === Number(a.guess)) eliminate(g, target, 'Guard guessed right');
+      if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
+      say(g, `${me.name} played ${nm} on ${target.name}, naming ${cardName(a.guess)}.`);
+      if (target.hand[0].rank === Number(a.guess)) eliminate(g, target, `${nm} guessed right`);
       else say(g, `Wrong guess.`);
       break;
     case 2:
-      if (noEffect) { say(g, `${me.name} played Priest — no one to target.`); break; }
-      say(g, `${me.name} played Priest and looked at ${target.name}'s hand.`);
+      if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
+      say(g, `${me.name} played ${nm} and looked at ${target.name}'s hand.`);
       say(g, `🔍 ${target.name} holds ${cardName(target.hand[0].rank)} (${target.hand[0].rank}).`, [me.id]);
+      // Private: only the acting player learns the card.
+      emit(g, 'reveal', { actor: me.id, target: target.id, name: target.name, rank: target.hand[0].rank }, [me.id]);
       break;
     case 3: {
-      if (noEffect) { say(g, `${me.name} played Baron — no one to target.`); break; }
-      say(g, `${me.name} played Baron against ${target.name}.`);
+      if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
+      say(g, `${me.name} played ${nm} against ${target.name}.`);
       const mine = me.hand[0], theirs = target.hand[0];
       say(g, `⚖️ You: ${cardName(mine.rank)} (${mine.rank}) vs ${target.name}: ${cardName(theirs.rank)} (${theirs.rank}).`, [me.id]);
       say(g, `⚖️ You: ${cardName(theirs.rank)} (${theirs.rank}) vs ${me.name}: ${cardName(mine.rank)} (${mine.rank}).`, [target.id]);
-      if (mine.rank > theirs.rank) eliminate(g, target, 'lost the Baron comparison');
-      else if (theirs.rank > mine.rank) eliminate(g, me, 'lost the Baron comparison');
+      const winner = mine.rank > theirs.rank ? me : theirs.rank > mine.rank ? target : null;
+      // Public: who won, never the compared cards (the loser's card is revealed by being discarded).
+      emit(g, 'compare', { actor: me.id, actorName: me.name, target: target.id, targetName: target.name, winner: winner && winner.id });
+      if (winner === me) eliminate(g, target, `lost the ${nm} comparison`);
+      else if (winner === target) eliminate(g, me, `lost the ${nm} comparison`);
       else say(g, 'It\'s a tie — nobody is out.');
       break;
     }
     case 4:
       me.protected = true;
-      say(g, `${me.name} played Handmaid and is protected until their next turn.`);
+      say(g, `${me.name} played ${nm} and is protected until their next turn.`);
+      emit(g, 'protected', { player: me.id, name: me.name });
       break;
     case 5: {
       const who = target === me ? 'themself' : target.name;
-      say(g, `${me.name} played Prince on ${who}.`);
+      say(g, `${me.name} played ${nm} on ${who}.`);
       const dropped = target.hand.pop();
       target.discards.push(dropped);
-      if (dropped.rank === 9) {
+      const out = dropped.rank === 9;
+      // The discarded card is face up, so everyone may see it.
+      emit(g, 'discard', { actor: me.id, target: target.id, name: target.name, rank: dropped.rank, out });
+      if (out) {
         say(g, `${target.name} discarded the Princess!`);
         eliminate(g, target, 'discarded the Princess');
       } else {
@@ -229,8 +290,8 @@ function playCard(g, pid, a) {
       say(g, 'The deck is empty — no effect.');
       break;
     case 7:
-      if (noEffect) { say(g, `${me.name} played King — no one to target.`); break; }
-      say(g, `${me.name} played King and traded hands with ${target.name}.`);
+      if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
+      say(g, `${me.name} played ${nm} and traded hands with ${target.name}.`);
       [me.hand, target.hand] = [target.hand, me.hand];
       say(g, `👑 You gave ${cardName(target.hand[0].rank)} and got ${cardName(me.hand[0].rank)}.`, [me.id]);
       say(g, `👑 You gave ${cardName(me.hand[0].rank)} and got ${cardName(target.hand[0].rank)}.`, [target.id]);
@@ -268,7 +329,7 @@ function endTurn(g) {
   const alive = g.players.filter((p) => p.alive);
   if (alive.length <= 1 || g.deck.length === 0) return endRound(g);
   let i = g.turn;
-  do { i = (i + 1) % g.players.length; } while (!g.players[i].alive);
+  do { i = (i + 1) % g.players.length; } while (!g.players[i].alive || g.players[i].left);
   g.turn = i;
   beginTurn(g);
 }
@@ -309,15 +370,19 @@ function endRound(g) {
   if (spyBonus) say(g, `${spyBonus.name} gets a bonus token for the Spy.`);
 
   const need = TOKENS_TO_WIN[g.players.length];
-  const reached = g.players.filter((p) => p.tokens >= need);
-  if (reached.length) {
-    const most = Math.max(...reached.map((p) => p.tokens));
-    g.winnerIds = reached.filter((p) => p.tokens === most).map((p) => p.id);
-    g.phase = 'gameOver';
-    say(g, `🏆 ${g.winnerIds.map((id) => byId(g, id).name).join(' & ')} won the game!`);
-  } else {
-    g.phase = 'roundOver';
-  }
+  const reached = seated(g).filter((p) => p.tokens >= need);
+  if (reached.length) finishGame(g, null, reached);
+  else if (seated(g).length < MIN_PLAYERS) finishGame(g, 'Not enough players left to continue.');
+  else g.phase = 'roundOver';
+}
+
+/** End the game; winners are the seated players (from `pool`) with the most tokens. */
+function finishGame(g, why, pool = seated(g)) {
+  if (why) say(g, why);
+  const most = Math.max(0, ...pool.map((p) => p.tokens));
+  g.winnerIds = pool.filter((p) => p.tokens === most).map((p) => p.id);
+  g.phase = 'gameOver';
+  if (g.winnerIds.length) say(g, `🏆 ${g.winnerIds.map((id) => byId(g, id).name).join(' & ')} won the game!`);
 }
 
 // ---------- views ----------
@@ -338,7 +403,7 @@ export function viewFor(g, pid) {
     turnPlayer: cur ? cur.id : null,
     myTurn,
     players: g.players.map((p) => ({
-      id: p.id, name: p.name, tokens: p.tokens, alive: p.alive,
+      id: p.id, name: p.name, tokens: p.tokens, alive: p.alive, left: !!p.left,
       protected: p.protected, discards: p.discards.map((c) => c.rank),
       handCount: p.hand.length,
     })),
@@ -346,10 +411,14 @@ export function viewFor(g, pid) {
       id: c.id,
       rank: c.rank,
       blocked: myTurn && g.phase === 'turn' && countessBlocks(me.hand, c),
+      blockedReason: myTurn && g.phase === 'turn' && countessBlocks(me.hand, c) ? FORCED_PLAY_REASON : null,
       targets: myTurn && g.phase === 'turn' ? validTargets(g, pid, c.rank) : [],
     })) : [],
     roundResult: reveal ? g.roundResult : null,
     winnerIds: g.winnerIds,
     log: g.log.filter((e) => !e.to || e.to.includes(pid)).slice(-60),
+    // Private events are filtered here, on the host, so they never reach other phones.
+    events: (g.events || []).filter((e) => !e.to || e.to.includes(pid)).slice(-20)
+      .map(({ to, ...e }) => e),
   };
 }

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Card layout fixture</title>
+  <link rel="stylesheet" href="../style.css">
+</head>
+<body>
+  <main id="root"></main>
+  <script type="module">
+    // Renders a hand with the real card markup + CSS, then measures it for tests/layout.test.js.
+    import { CARDS } from '../js/engine.js';
+    import { handGridHTML } from '../js/ui.js';
+
+    const q = new URLSearchParams(location.search);
+    // Results go back to the test's server; `key` matches them to the request.
+    const report = (json) => fetch(`/__result?key=${q.get('key')}`, { method: 'POST', body: json });
+    // Headless Chrome can't size its window exactly (min 500px wide), so measure inside an iframe of the exact width.
+    if (q.get('frame')) {
+      const inner = new URLSearchParams(q); inner.delete('frame');
+      const f = Object.assign(document.createElement('iframe'), { src: `?${inner}`, width: q.get('frame'), height: 900 });
+      f.style.border = '0';
+      addEventListener('message', (e) => report(e.data));
+      document.body.style.margin = '0';
+      document.body.append(f);
+      throw 'measuring in iframe';
+    }
+    const ranks = q.get('ranks').split(',').map(Number);
+    const art = q.get('art') || 'all';          // all | none | some
+    if (q.get('long')) {
+      CARDS[6].name = 'Chancellor of the Exceptionally Long Title';
+      CARDS[6].text = CARDS[6].text + ' ' + 'This extra sentence makes the rule text much longer than any other card so it has to wrap onto many lines. '.repeat(2);
+    }
+    const artFor = (r) => (art === 'all' || (art === 'some' && r !== ranks[0]) ? `../art/${r}.jpg` : null);
+    const cards = ranks.map((rank, i) => ({ id: i, rank }));
+    document.getElementById('root').innerHTML =
+      handGridHTML(cards, { artFor, cardOpts: (c) => ({ selectable: true, note: q.get('note') && c.id === 0 ? 'If you hold a King, Viscount, or Princess, you must play the Countess.' : '' }) });
+
+    await Promise.all([...document.images].map((img) => img.decode().catch(() => {})));
+    await document.fonts.ready;
+
+    const box = (el) => { const r = el.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, width: r.width, height: r.height }; };
+    const overflow = (el) => el.scrollWidth > el.clientWidth + 1 || el.scrollHeight > el.clientHeight + 1;
+    const out = {
+      viewport: innerWidth,
+      pageOverflowX: document.documentElement.scrollWidth > innerWidth,
+      cards: [...document.querySelectorAll('.card')].map((card) => {
+        const s = (sel) => card.querySelector(sel);
+        const img = s('.art img');
+        return {
+          card: box(card), cardClipped: overflow(card),
+          art: s('.art') && box(s('.art')),
+          img: img && { ...box(img), fit: getComputedStyle(img).objectFit, natural: [img.naturalWidth, img.naturalHeight] },
+          head: box(s('.card-head')), headOverflow: overflow(s('.card-head')),
+          text: box(s('.ctext')), textOverflow: overflow(s('.ctext')),
+          note: box(s('.note')),
+          textLen: s('.ctext').textContent.length, expectedLen: CARDS[Number(card.className.match(/\br(\d)\b/)[1])].text.length,
+        };
+      }),
+    };
+    if (parent !== window) parent.postMessage(JSON.stringify(out), '*'); else report(JSON.stringify(out));
+  </script>
+</body>
+</html>

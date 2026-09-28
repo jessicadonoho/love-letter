@@ -1,8 +1,9 @@
 import {
   CARDS, cardName, MIN_PLAYERS, MAX_PLAYERS,
-  createGame, addPlayer, removePlayer, startGame, startRound, applyAction, viewFor,
+  createGame, addPlayer, leavePlayer, startGame, startRound, applyAction, viewFor,
 } from './engine.js';
 import { Host, Client } from './net.js';
+import { esc, handGridHTML, useBarHTML, fxHTML } from './ui.js';
 
 // ---------- local identity & storage ----------
 
@@ -20,6 +21,8 @@ if (!clientId) { clientId = Math.random().toString(36).slice(2, 10); store.set(i
 
 const SESSION_KEY = 'session' + (params.get('as') ? '.' + params.get('as') : '');
 const SESSION_TTL = 12 * 60 * 60 * 1000;
+// Last effect-popup event seen, so refreshes and repeated syncs never replay a popup.
+const FX_KEY = 'fxSeen' + (params.get('as') ? '.' + params.get('as') : '');
 
 // ---------- app state ----------
 
@@ -36,6 +39,8 @@ const S = {
   sel: null, target: null, guess: null,
   keep: null, bottom: [],
   showRules: false,
+  submitting: false,       // a move is on its way to the host
+  fxQueue: [],             // card-effect popups waiting to be shown, oldest first
 };
 
 let game = null;   // host only: authoritative game state
@@ -47,7 +52,6 @@ const $app = document.getElementById('app');
 
 // ---------- helpers ----------
 
-const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const nameOf = (id) => S.view?.players.find((p) => p.id === id)?.name ?? '?';
 const LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const newCode = () => Array.from({ length: 4 }, () => LETTERS[Math.floor(Math.random() * LETTERS.length)]).join('');
@@ -117,7 +121,8 @@ function hostOnMessage(conn, msg) {
     if (!res.ok) host.send(conn, { t: 'error', error: res.error });
     broadcast();
   } else if (msg.t === 'leave' && conn.clientId) {
-    removePlayer(game, conn.clientId);
+    // Idempotent: a repeated leave (or leave + remove) for the same player is ignored.
+    leavePlayer(game, conn.clientId);
     connsById.delete(conn.clientId);
     broadcast();
   }
@@ -125,6 +130,7 @@ function hostOnMessage(conn, msg) {
 
 function hostAct(action) {
   const res = applyAction(game, clientId, action);
+  S.submitting = false;
   if (!res.ok) toast(res.error);
   else resetSelection();
   broadcast();
@@ -139,6 +145,7 @@ function broadcast() {
   S.view = viewFor(game, clientId);
   S.online = online;
   if (prevPhase !== S.view.phase) resetSelection();
+  ingestEvents(S.view);
   store.set(SESSION_KEY, { role: 'host', code: S.code, game, savedAt: Date.now() });
   render();
 }
@@ -164,14 +171,19 @@ function joinRoom(code, quiet = false) {
       if (msg.t === 'state') {
         const prev = S.view;
         S.view = msg.view; S.online = msg.online || [];
+        S.submitting = false;
         if (!prev || prev.phase !== msg.view.phase || prev.turnPlayer !== msg.view.turnPlayer) resetSelection();
+        ingestEvents(S.view);
         store.set(SESSION_KEY, { role: 'client', code: S.code, savedAt: Date.now() });
         keepAwake();
         render();
       } else if (msg.t === 'error') {
+        S.submitting = false;
         toast(msg.error);
       } else if (msg.t === 'rejected') {
         leave(msg.error);
+      } else if (msg.t === 'closed') {
+        leave('The host closed the room.');
       }
     },
   });
@@ -179,29 +191,113 @@ function joinRoom(code, quiet = false) {
   if (!quiet) render();
 }
 
+let submitTimer;
 function act(action) {
+  if (S.submitting) return;              // ignore double taps while a move is in flight
   if (S.role === 'host') return hostAct(action);
-  if (!client.send({ t: 'action', action })) toast('Not connected — try again in a moment.');
-  else resetSelection();
+  if (!client.send({ t: 'action', action })) { toast('Not connected — try again in a moment.'); return; }
+  // Keep the selection (and a disabled "Sending…" button) until the host answers.
+  S.submitting = true;
+  clearTimeout(submitTimer);
+  submitTimer = setTimeout(() => { if (S.submitting) { S.submitting = false; render(); } }, 8000);
   render();
 }
 
 function leave(reason) {
   if (S.role === 'client') client?.send({ t: 'leave' });
+  // The room lives on the host's phone, so the host leaving closes it for everyone.
+  if (S.role === 'host') for (const conn of connsById.values()) host?.send(conn, { t: 'closed' });
   setTimeout(() => { client?.destroy(); host?.destroy(); client = host = null; }, 200);
   game = null; connsById.clear();
   store.del(SESSION_KEY);
   Object.assign(S, { screen: 'home', role: null, view: null, code: '', status: '' });
   resetSelection();
+  S.submitting = false; S.fxQueue = []; renderFx();
   if (reason) toast(reason); else render();
 }
 
+// ---------- card-effect popups ----------
+
+function ingestEvents(v) {
+  const events = v.events || [];
+  const top = events.reduce((m, e) => Math.max(m, e.seq), 0);
+  const seen = store.get(FX_KEY);
+  if (!seen || seen.code !== S.code) {
+    // First view of this room on this device: don't replay old effects.
+    store.set(FX_KEY, { code: S.code, seq: top });
+    return;
+  }
+  const fresh = events.filter((e) => e.seq > seen.seq);
+  if (!fresh.length) return;
+  store.set(FX_KEY, { code: S.code, seq: top });
+  const wasEmpty = !S.fxQueue.length;
+  S.fxQueue.push(...fresh);
+  if (wasEmpty) renderFx(); else updateFxCount();
+}
+
+// Popups live outside #app so game re-renders never restart their animation or steal focus.
+const $fx = document.createElement('div');
+$fx.id = 'fx';
+document.body.append($fx);
+let fxReturnFocus = null;
+
+function renderFx() {
+  const ev = S.fxQueue[0];
+  if (!ev) { $fx.innerHTML = ''; restoreFocus(fxReturnFocus); fxReturnFocus = null; return; }
+  if (!$fx.firstChild) fxReturnFocus = focusKey();
+  $fx.innerHTML = fxHTML(ev, S.view?.me ?? clientId, S.fxQueue.length - 1);
+  if (!$fx.firstChild) { S.fxQueue.shift(); renderFx(); return; } // unknown event type
+  $fx.querySelector('[data-fx="ok"]').focus();
+}
+
+function updateFxCount() {
+  // Only the "N more waiting" line changes; don't rebuild (keeps the animation running).
+  const ok = $fx.querySelector('[data-fx="ok"]');
+  if (!ok) return renderFx();
+  const n = S.fxQueue.length - 1;
+  let line = $fx.querySelector('.fx-more');
+  if (!line) { line = document.createElement('p'); line.className = 'muted small fx-more'; ok.before(line); }
+  line.textContent = `${n} more update${n > 1 ? 's' : ''} waiting`;
+  ok.textContent = 'Next';
+}
+
+function dismissFx() {
+  S.fxQueue.shift();
+  renderFx();
+}
+
+$fx.addEventListener('click', (e) => {
+  const a = e.target.dataset?.fx;
+  if (a === 'ok' || a === 'backdrop') dismissFx();
+});
+$fx.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); dismissFx(); }
+  else if (e.key === 'Tab') { e.preventDefault(); $fx.querySelector('[data-fx="ok"]')?.focus(); } // only one control: keep focus in the dialog
+});
+
 // ---------- rendering ----------
 
+// Re-rendering replaces the DOM, so remember which control had focus and restore it.
+function focusKey() {
+  const el = document.activeElement;
+  if (!el || el === document.body || !$app.contains(el)) return null;
+  if (el.id) return `#${CSS.escape(el.id)}`;
+  if (!el.dataset.a) return null;
+  return ['a', 'id', 'r'].filter((k) => el.dataset[k] != null).map((k) => `[data-${k}="${CSS.escape(el.dataset[k])}"]`).join('');
+}
+function restoreFocus(key) {
+  if (key && !$fx.firstChild) $app.querySelector(key)?.focus();
+}
+
 function render() {
+  const key = focusKey();
+  const bar = S.screen === 'room' ? useBar() : '';
   $app.innerHTML = (S.screen === 'home' ? homeHTML() : roomHTML())
+    + bar
     + (S.showRules ? rulesHTML() : '')
     + (S.toast ? `<div class="toast" role="status">${esc(S.toast)}</div>` : '');
+  document.body.classList.toggle('has-bar', !!bar);
+  restoreFocus(key);
 }
 
 function homeHTML() {
@@ -277,17 +373,24 @@ function bannerHTML(v) {
   else if (v.myTurn) text = 'Your turn — pick a card to play';
   else if (!v.players.find((p) => p.id === v.me)?.alive) text = `You're out this round. ${esc(nameOf(v.turnPlayer))} is playing…`;
   else text = `${esc(nameOf(v.turnPlayer))} is playing…`;
+  if (!v.myTurn && v.turnPlayer && !S.online.includes(v.turnPlayer)) {
+    text += S.role === 'host' ? ' (offline — you can remove them below)' : ' (offline — waiting for them to reconnect)';
+  }
   return `<div class="banner ${v.myTurn ? 'mine' : ''}">${text}</div>`;
 }
 
+const SHIELD = '<span class="badge shield" role="img" aria-label="Protected until next turn" title="Protected until next turn"><span aria-hidden="true">🛡️</span> Protected</span>';
+
 function playersHTML(v) {
+  const isHost = S.role === 'host';
   return `<ul class="players">${v.players.map((p) => `
     <li class="player ${p.alive ? '' : 'out'} ${p.id === v.turnPlayer ? 'turn' : ''}">
       <div class="p-row">
         <span class="p-name">${p.id === v.turnPlayer ? '▶ ' : ''}${esc(p.name)}${p.id === v.me ? ' (you)' : ''}</span>
-        ${p.protected ? '<span class="badge">🛡 protected</span>' : ''}
-        ${p.alive ? '' : '<span class="badge">out</span>'}
-        ${dot(p.id)}
+        ${p.protected ? SHIELD : ''}
+        ${p.left ? '<span class="badge">left</span>' : p.alive ? '' : '<span class="badge">out</span>'}
+        ${p.left ? '' : dot(p.id)}
+        ${isHost && p.id !== v.me && !p.left && !S.online.includes(p.id) ? `<button class="chip" data-a="kick" data-id="${esc(p.id)}">Remove</button>` : ''}
         <span class="tokens" title="Tokens">${'♥'.repeat(p.tokens)}<span class="muted">${'♡'.repeat(Math.max(0, (v.tokensToWin || 0) - p.tokens))}</span></span>
       </div>
       <div class="discards">${p.discards.length ? p.discards.map((r) => `<span class="mini r${r}">${r} ${cardName(r)}</span>`).join('') : '<span class="muted">no discards</span>'}</div>
@@ -296,37 +399,53 @@ function playersHTML(v) {
   ${v.faceUp.length ? `<div class="muted small">Set aside face up: ${v.faceUp.map((r) => `${r} ${cardName(r)}`).join(', ')}</div>` : ''}`;
 }
 
-function cardHTML(c, { selectable, selected, note } = {}) {
-  const info = CARDS[c.rank];
-  const art = ART[c.rank];
-  return `<button class="card r${c.rank} ${art ? 'has-art' : ''} ${selected ? 'selected' : ''}" ${selectable ? `data-a="pick" data-id="${c.id}"` : 'disabled'}>
-    ${art ? `<span class="art"><img src="${esc(art)}" alt=""></span>` : ''}
-    <span class="card-head"><span class="rank">${c.rank}</span><span class="cname">${info.name}</span></span>
-    <span class="ctext">${info.text}</span>${note ? `<span class="note">${note}</span>` : ''}</button>`;
-}
-
 function handHTML(v) {
   const me = v.players.find((p) => p.id === v.me);
   if (!me?.alive) return '<h2>Your hand</h2><p class="muted">You\'re out until next round.</p>';
 
   if (v.phase === 'chancellor' && v.myTurn) return chancellorHTML(v);
 
-  const cards = v.hand.map((c) => cardHTML(c, {
-    selectable: v.myTurn && !c.blocked,
-    selected: S.sel === c.id,
-    note: c.blocked ? 'Must play Countess' : '',
-  })).join('');
+  const cards = handGridHTML(v.hand, {
+    artFor: (r) => ART[r] || null,
+    cardOpts: (c) => ({ selectable: v.myTurn && !c.blocked && !S.submitting, selected: S.sel === c.id, note: c.blocked ? c.blockedReason : '' }),
+  });
   let panel = '';
   const sel = v.myTurn && v.hand.find((c) => c.id === S.sel);
   if (sel) panel = actionPanelHTML(v, sel);
-  return `<h2>Your hand</h2><div class="hand">${cards}</div>${panel}`;
+  return `<h2>Your hand</h2>${cards}${panel}`;
+}
+
+const NEEDS_TARGET = [1, 2, 3, 5, 7];
+
+/** What the selected card still needs before it can be played, or a warning. */
+function playStatus(c) {
+  const needsTarget = NEEDS_TARGET.includes(c.rank);
+  if (needsTarget && !c.targets.length) return { ready: true, hint: 'Everyone else is protected or out — this card will have no effect.' };
+  if (needsTarget && !S.target) return { ready: false, hint: 'Next: choose a player above.' };
+  if (c.rank === 1 && S.guess == null) return { ready: false, hint: 'Next: guess their card above.' };
+  if (c.rank === 9) return { ready: true, hint: 'Playing the Princess knocks you out of the round!' };
+  return { ready: true, hint: '' };
+}
+
+/** The fixed bottom "Use this card" / "Keep this card" bar, if a card is selected. */
+function useBar() {
+  const v = S.view;
+  if (!v?.myTurn || !v.players.find((p) => p.id === v.me)?.alive) return '';
+  if (v.phase === 'chancellor') {
+    const card = v.hand.find((c) => c.id === S.keep);
+    return useBarHTML({ mode: 'keep', card, submitting: S.submitting });
+  }
+  if (v.phase !== 'turn') return '';
+  const card = v.hand.find((c) => c.id === S.sel);
+  if (!card) return '';
+  return useBarHTML({ card, ...playStatus(card), submitting: S.submitting });
 }
 
 function actionPanelHTML(v, c) {
-  const needsTarget = [1, 2, 3, 5, 7].includes(c.rank);
+  const needsTarget = NEEDS_TARGET.includes(c.rank);
   let body = '';
   if (needsTarget && !c.targets.length) {
-    body = '<p class="muted">Everyone else is protected or out — this card will have no effect.</p>';
+    return '';   // the bottom bar explains that the card will have no effect
   } else if (needsTarget) {
     body = `<div class="label">${c.rank === 5 ? 'Choose a player (can be you)' : 'Choose a player'}</div>
       <div class="opts">${c.targets.map((id) => `<button class="opt ${S.target === id ? 'on' : ''}" data-a="target" data-id="${esc(id)}">${esc(id === v.me ? 'Me' : nameOf(id))}</button>`).join('')}</div>`;
@@ -336,13 +455,14 @@ function actionPanelHTML(v, c) {
     }
   }
   if (c.rank === 9) body += '<p class="warn">Playing the Princess knocks you out of the round!</p>';
-  const ready = !needsTarget || !c.targets.length || (S.target && (c.rank !== 1 || S.guess != null));
-  return `<section class="action">${body}
-    <button class="btn primary" data-a="play" ${ready ? '' : 'disabled'}>Play ${cardName(c.rank)}</button></section>`;
+  return body ? `<section class="action">${body}</section>` : '';
 }
 
 function chancellorHTML(v) {
-  const cards = v.hand.map((c) => cardHTML(c, { selectable: true, selected: S.keep === c.id })).join('');
+  const cards = handGridHTML(v.hand, {
+    artFor: (r) => ART[r] || null,
+    cardOpts: (c) => ({ selectable: !S.submitting, selected: S.keep === c.id }),
+  });
   let order = '';
   if (S.keep != null) {
     if (S.bottom.length !== v.hand.length - 1) S.bottom = v.hand.filter((c) => c.id !== S.keep).map((c) => c.id);
@@ -353,8 +473,7 @@ function chancellorHTML(v) {
          <button class="chip" data-a="swap">Swap order</button>`
       : `<p class="muted">${cardName(rank(S.bottom[0]))} goes to the bottom of the deck.</p>`;
   }
-  return `<h2>Tap the card to keep</h2><div class="hand">${cards}</div>
-    <section class="action">${order}<button class="btn primary" data-a="keep" ${S.keep == null ? 'disabled' : ''}>Keep it</button></section>`;
+  return `<h2>Tap the card to keep</h2>${cards}${order ? `<section class="action">${order}</section>` : ''}`;
 }
 
 function resultHTML(v) {
@@ -440,18 +559,23 @@ $app.addEventListener('click', async (e) => {
       } catch { /* cancelled */ }
       break;
     }
-    case 'kick': removePlayer(game, el.dataset.id); connsById.get(el.dataset.id)?.close(); connsById.delete(el.dataset.id); broadcast(); break;
+    case 'kick': {
+      // Mid-game, removing a player is permanent for this game, so ask for a second tap.
+      if (v.phase !== 'lobby' && !armed('kick:' + el.dataset.id, `Tap Remove again to take ${nameOf(el.dataset.id)} out of the game.`)) break;
+      leavePlayer(game, el.dataset.id); connsById.get(el.dataset.id)?.close(); connsById.delete(el.dataset.id); broadcast(); break;
+    }
     case 'start': { const r = startGame(game); if (!r.ok) toast(r.error); broadcast(); break; }
     case 'next': startRound(game); broadcast(); break;
     case 'again': startGame(game); broadcast(); break;
     case 'pick': {
+      if (S.submitting) break;
       const id = Number(el.dataset.id);
       if (v.phase === 'chancellor') { S.keep = id; S.bottom = []; }
       else { if (S.sel !== id) { S.target = null; S.guess = null; } S.sel = id; }
       render(); break;
     }
-    case 'target': S.target = el.dataset.id; render(); break;
-    case 'guess': S.guess = Number(el.dataset.r); render(); break;
+    case 'target': if (!S.submitting) { S.target = el.dataset.id; render(); } break;
+    case 'guess': if (!S.submitting) { S.guess = Number(el.dataset.r); render(); } break;
     case 'play': act({ type: 'play', cardId: S.sel, target: S.target, guess: S.guess }); break;
     case 'swap': S.bottom = [...S.bottom].reverse(); render(); break;
     case 'keep': act({ type: 'chancellor', keepId: S.keep, bottom: S.bottom }); break;
@@ -459,16 +583,22 @@ $app.addEventListener('click', async (e) => {
 });
 
 function confirmLeave() {
-  // Avoid window.confirm (blocks some in-app browsers); use a second tap instead.
-  if (S.leaveArmed) { S.leaveArmed = false; return true; }
-  S.leaveArmed = true;
-  toast(S.role === 'host' ? 'Tap Leave again to close the room for everyone.' : 'Tap Leave again to leave the room.');
-  setTimeout(() => { S.leaveArmed = false; }, 3500);
+  return armed('leave', S.role === 'host' ? 'Tap Leave again to close the room for everyone.' : 'Tap Leave again to leave the room.');
+}
+
+// Avoid window.confirm (blocks some in-app browsers); use a second tap instead.
+let armedKey = null, armedTimer;
+function armed(key, msg) {
+  if (armedKey === key) { armedKey = null; return true; }
+  armedKey = key;
+  toast(msg);
+  clearTimeout(armedTimer);
+  armedTimer = setTimeout(() => { armedKey = null; }, 3500);
   return false;
 }
 
 // ---------- card art ----------
-// Drop images named by card number into the art/ folder (e.g. art/5.png for the Prince).
+// Drop images named by card number into the art/ folder (e.g. art/5.png for the Viscount).
 // Any of these extensions work; cards without an image keep the text-only look.
 const ART = {};
 const ART_EXTS = ['png', 'jpg', 'jpeg', 'webp', 'svg'];
