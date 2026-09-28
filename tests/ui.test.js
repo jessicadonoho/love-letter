@@ -3,7 +3,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { CARDS } from '../js/engine.js';
-import { useBarHTML, describeEvent, fxHTML, handGridHTML } from '../js/ui.js';
+import { useBarHTML, describeEvent, fxHTML, handGridHTML, CARD_BACK } from '../js/ui.js';
 
 const root = new URL('../', import.meta.url);
 const read = (f) => readFileSync(new URL(f, root), 'utf8');
@@ -12,7 +12,7 @@ const read = (f) => readFileSync(new URL(f, root), 'utf8');
 
 test('cards use the new names', () => {
   assert.deepEqual([1, 2, 3, 5].map((r) => CARDS[r].name), ['Maid', 'Assassin', 'Mercenary', 'Viscount']);
-  assert.equal(CARDS[8].text, 'If you hold a King, Viscount, or Princess, you must play this card.');
+  assert.equal(CARDS[8].text, 'If you hold a King, Viscount, Chancellor, or Princess, you must play this card.');
 });
 
 test('old card names and the "precvent" typo appear nowhere user-facing', () => {
@@ -53,7 +53,7 @@ test('use bar: disabled until the next step is done, and says what it is', () =>
 });
 
 test('use bar: disabled with an explanation for an illegal card', () => {
-  const html = useBarHTML({ card: card(7, { blocked: true, blockedReason: 'If you hold a King, Viscount, or Princess, you must play the Countess.' }) });
+  const html = useBarHTML({ card: card(7, { blocked: true, blockedReason: 'If you hold a King, Viscount, Chancellor, or Princess, you must play the Countess.' }) });
   assert.match(btn(html), / disabled/);
   assert.match(html, /use-hint warn/);
   assert.match(html, /must play the Countess/);
@@ -95,6 +95,18 @@ test('Assassin popup names the target and the card', () => {
   assert.match(d.title, /Assassin/);
   assert.match(d.text, /Bea holds 7 King/);
   assert.match(d.text, /Only you can see this/);
+  const html = fxHTML({ type: 'reveal', target: 'b', name: 'Bea', rank: 7 }, 'a', 0, { artFor: (r) => `art/${r}.jpg` });
+  assert.match(html, /<div class="card r7 has-art/, 'shows the card as a picture, not a button');
+  assert.ok(html.includes('src="art/7.jpg"'), 'with its art');
+  assert.ok(html.includes(CARDS[7].text), 'and its rule');
+  assert.ok(!html.includes('class="fx-icon"'));
+});
+
+test('Assassin target popup says who saw their card', () => {
+  const html = fxHTML({ type: 'seen', actor: 'a', actorName: 'Ann', rank: 7 }, 'b', 0, { artFor: (r) => `art/${r}.jpg` });
+  assert.match(html, /Assassin: Ann saw your card/);
+  assert.match(html, /Ann used the Assassin and now knows you hold 7 King/);
+  assert.match(html, /<div class="card r7 has-art/);
 });
 
 test('elimination popup: 🏹, plain text, decorative animated name', () => {
@@ -118,6 +130,39 @@ test('Mercenary popup names the winner (or a tie) and never a card', () => {
   assert.match(describeEvent({ ...base, winner: 'a' }, 'b').text, /against you\. You are out/);
   assert.match(describeEvent({ ...base, winner: null }, 'c').text, /tie — nobody is out/);
   for (const c of CARDS) assert.ok(!won.text.includes(c.name), `mentions ${c.name}`);
+});
+
+test('Chancellor popup: card backs and a count, never card names', () => {
+  const ev = { type: 'chancellor', actor: 'a', name: 'Ann', count: 2 };
+  const d = describeEvent(ev, 'b');
+  assert.match(d.title, /Ann played the Chancellor/);
+  assert.match(d.text, /^Ann drew 2 cards, kept 1, and put 2 cards face down on the bottom of the deck\.$/);
+  const html = fxHTML(ev, 'b');
+  assert.equal(html.split(CARD_BACK).length - 1, 3, 'three cards in hand');
+  assert.equal(html.split('class="leave"').length - 1, 2, 'two go to the bottom');
+  assert.equal(html.split('class="kept"').length - 1, 1, 'one is kept');
+  assert.equal(fxHTML({ ...ev, count: 1 }, 'b').split('class="leave"').length - 1, 1, 'deck had only 1 card');
+  assert.ok(!html.includes('class="fx-icon"'));
+  for (const c of CARDS.filter((c) => c.rank !== 6)) assert.ok(!html.includes(c.name), `mentions ${c.name}`);
+  assert.ok(existsSync(new URL(CARD_BACK, root)), 'card back image exists');
+  assert.match(describeEvent({ ...ev, count: 0 }, 'b').text, /deck was empty/);
+});
+
+test('King popup: target is alerted with their new card, others see who traded', () => {
+  const base = { type: 'trade', actor: 'a', actorName: 'Ann', target: 'b', targetName: 'Bea' };
+  const other = describeEvent(base, 'c');
+  assert.match(other.text, /Ann used the King and traded hands with Bea/);
+  assert.equal(other.card, undefined);
+  const mine = fxHTML({ ...base, gave: 8, got: 3 }, 'b', 0, { artFor: (r) => `art/${r}.jpg` });
+  assert.match(mine, /Ann traded hands with you/);
+  assert.match(mine, /You gave 8 Countess and got 3 Mercenary/);
+  assert.ok(mine.indexOf('You gave') < mine.indexOf('class="card r8') && mine.indexOf('class="card r8') < mine.indexOf('You got'), 'gave card first');
+  assert.match(mine, /You got<\/span>[\s\S]*<div class="card r3 has-art/);
+});
+
+test('Maid guess buttons show how many of each card are in the whole deck', () => {
+  assert.match(read('js/main.js'), /data-a="guess"[^`]*\(\$\{CARDS\[r\]\.count\}\)/);
+  assert.equal(CARDS[9].count, 1);
 });
 
 test('protection popup and shield indicator label', () => {

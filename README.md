@@ -13,7 +13,7 @@ A small website for playing Love Letter (2019 rules, 2–6 players) with friends
 3. The host taps **Start**. On your turn, tap a card, choose a player (and a guess for the Maid), then tap **Use this card** at the bottom of the screen.
 4. After each round, the host taps **Next round**.
 
-This version renames four cards: **Maid** (1), **Assassin** (2), **Mercenary** (3), and **Viscount** (5). The Countess (8) must be played if you also hold a King, Viscount, or Princess.
+This version renames four cards: **Maid** (1), **Assassin** (2), **Mercenary** (3), and **Viscount** (5). The Countess (8) must be played if you also hold a King, Viscount, Chancellor, or Princess.
 
 If someone taps **Leave** during a game, they're out for the rest of that game and their turns are skipped. If a phone just loses its connection, the game waits for it to come back. The host can remove an offline player from the player list. If the host leaves, the room closes for everyone.
 

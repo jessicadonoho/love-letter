@@ -59,13 +59,13 @@ test('Handmaid blocks targeting; Maid with no targets has no effect', () => {
   assert.equal(g.players[0].protected, false, 'protection ends at start of own turn');
 });
 
-for (const [rank, label] of [[7, 'King'], [5, 'Viscount'], [9, 'Princess']]) {
+for (const [rank, label] of [[7, 'King'], [5, 'Viscount'], [6, 'Chancellor'], [9, 'Princess']]) {
   test(`Countess must be played when the other card is ${label}`, () => {
     const g = newGame(3);
     rig(g, [[8, rank], [1], [2]]);
     const res = applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, rank), target: 'p1' });
     assert.equal(res.ok, false, 'engine rejects the illegal card');
-    assert.match(res.error, /King, Viscount, or Princess/);
+    assert.match(res.error, /King, Viscount, Chancellor, or Princess/);
     const view = viewFor(g, 'p0').hand;
     assert.equal(view.find((c) => c.rank === rank).blocked, true);
     assert.match(view.find((c) => c.rank === rank).blockedReason, /must play the Countess/);
@@ -75,7 +75,7 @@ for (const [rank, label] of [[7, 'King'], [5, 'Viscount'], [9, 'Princess']]) {
 }
 
 test('Countess is not forced with other cards', () => {
-  for (const rank of [0, 1, 2, 3, 4, 6]) {
+  for (const rank of [0, 1, 2, 3, 4]) {
     const g = newGame(3);
     rig(g, [[8, rank], [1], [2]]);
     assert.equal(viewFor(g, 'p0').hand.find((c) => c.rank === rank).blocked, false, `rank ${rank}`);
@@ -133,6 +133,57 @@ test('Chancellor keeps one, returns two to bottom', () => {
   assert.equal(g.players[0].hand[0].rank, 7);
   assert.equal(g.deck[0].id, rest[0], 'first chosen goes to very bottom');
   assert.equal(g.phase, 'turn');
+});
+
+test('Chancellor event goes to the other players only, with no card info', () => {
+  const g = newGame(3);
+  rig(g, [[6, 1], [2], [3]], [4, 5, 7]);
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 6) });
+  assert.equal(evs(g, 'p1', 'chancellor').length, 0, 'no popup until the choice is made');
+  const keep = cid(g, 0, 7);
+  applyAction(g, 'p0', { type: 'chancellor', keepId: keep, bottom: [cid(g, 0, 1), cid(g, 0, 5)] });
+  assert.equal(evs(g, 'p0', 'chancellor').length, 0, 'the player who used it gets no popup');
+  for (const pid of ['p1', 'p2']) {
+    const theirs = evs(g, pid, 'chancellor');
+    assert.equal(theirs.length, 1);
+    assert.equal(theirs[0].count, 2);
+    assert.deepEqual(Object.keys(theirs[0]).sort(), ['actor', 'count', 'name', 'seq', 'type']);
+  }
+});
+
+test('King event: target learns the card they got, others only who traded', () => {
+  const g = newGame(3);
+  rig(g, [[7, 3], [8], [2]]);
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 7), target: 'p1' });
+  assert.equal(evs(g, 'p0', 'trade').length, 0, 'the King player gets no popup');
+  const [t] = evs(g, 'p1', 'trade');
+  assert.equal(t.got, 3);
+  assert.equal(t.gave, 8);
+  assert.equal(t.actorName, 'P0');
+  const [o] = evs(g, 'p2', 'trade');
+  assert.deepEqual([o.actor, o.target], ['p0', 'p1']);
+  assert.ok(!('got' in o) && !('gave' in o), 'bystanders never see the traded cards');
+});
+
+test('Players who are out get no popups for the rest of the round', () => {
+  const g = newGame(3);
+  rig(g, [[1, 4], [7], [5]], [1, 1, 1, 1, 1, 1]);
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 1), target: 'p1', guess: 7 });
+  assert.ok(evs(g, 'p1', 'guess').length, 'sees the guess that knocked them out');
+  assert.ok(evs(g, 'p1', 'eliminated').some((e) => e.player === 'p1'), 'sees their own exit');
+  applyAction(g, 'p2', { type: 'play', cardId: cid(g, 2, 5), target: 'p2' });
+  assert.equal(evs(g, 'p1', 'discard').length, 0, 'later popups are not sent');
+  assert.equal(evs(g, 'p0', 'discard').length, 1, 'players still in get them');
+  startRound(g);
+  assert.equal(g.players[1].outSeq, null, 'reset for the next round');
+});
+
+test('Chancellor on an empty deck emits a no-effect event', () => {
+  const g = newGame(3);
+  rig(g, [[6, 1], [2], [3]], []);
+  g.deck = [];
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 6) });
+  assert.ok(evs(g, 'p1', 'chancellor').some((e) => e.count === 0));
 });
 
 test('King swaps hands', () => {
@@ -211,7 +262,7 @@ test('Random full games always finish with valid state (fuzz)', () => {
 
 const evs = (g, pid, type) => viewFor(g, pid).events.filter((e) => e.type === type);
 
-test('Assassin (2) popup event goes only to the acting player', () => {
+test('Assassin (2) popup event goes only to the acting player; the target learns who looked', () => {
   const g = newGame(3);
   rig(g, [[2, 1], [7], [5]]);
   applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 2), target: 'p1' });
@@ -221,6 +272,10 @@ test('Assassin (2) popup event goes only to the acting player', () => {
   assert.equal(ev.rank, 7);
   assert.equal(evs(g, 'p1', 'reveal').length, 0);
   assert.equal(evs(g, 'p2', 'reveal').length, 0);
+  const [seen] = evs(g, 'p1', 'seen');
+  assert.deepEqual([seen.actor, seen.actorName, seen.rank], ['p0', 'P0', 7]);
+  assert.equal(evs(g, 'p0', 'seen').length, 0);
+  assert.equal(evs(g, 'p2', 'seen').length, 0);
   assert.ok(!('to' in ev), 'recipient list is not sent to clients');
   assert.ok(!JSON.stringify(viewFor(g, 'p2')).includes('"rank":7'), 'no leak to others');
 });

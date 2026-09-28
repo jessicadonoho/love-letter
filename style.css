@@ -129,6 +129,7 @@ input { font: inherit; font-size: 1rem; padding: 12px; border-radius: 10px; bord
 .opts { display: flex; flex-wrap: wrap; gap: 6px; }
 .opt { padding: 10px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); min-width: 44px; }
 .opt.on { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.opt.on .muted { color: inherit; opacity: .85; }
 .opts.guess .opt { flex: 1 1 30%; font-size: .88rem; }
 .order { margin: 4px 0 8px; padding-left: 20px; }
 .plain { list-style: none; padding: 0; margin: 4px 0 10px; display: grid; gap: 4px; }
@@ -175,6 +176,26 @@ body.has-bar .toast { bottom: calc(140px + env(safe-area-inset-bottom)); }
 .fx-card p { margin: 8px 0; }
 .fx-card .btn { margin: 14px 0 0; }
 .fx-protected .fx-icon { filter: drop-shadow(0 0 8px var(--shield-bg)); }
+.fx-shown-card { margin: 4px 0 6px; text-align: left; }
+.fx-shown-card .hand[data-count="1"] { grid-template-columns: minmax(0, 220px); }
+.fx-shown-card .card { min-height: 0; }
+.fx-swap { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: stretch; gap: 6px; margin: 4px 0 6px; text-align: left; }
+.fx-swap-col { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; }
+.fx-swap .hand[data-count="1"] { grid-template-columns: minmax(0, 1fr); width: 100%; flex: 1; }
+.fx-swap .card { min-height: 0; height: 100%; }
+.fx-swap-arrow { font-size: 1.4rem; color: var(--accent); align-self: center; }
+.fx-chancellor-art { display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 4px 0 6px; }
+.fx-backs-label { font-size: .8rem; font-weight: 600; color: var(--muted); }
+.fx-chancellor-art .fx-backs-label { animation: fx-fade .4s ease-out 1.9s backwards; }
+.fx-backs-cards { display: flex; justify-content: center; height: 88px; }
+.fx-backs-cards img { width: 60px; height: 88px; margin: 0 4px; object-fit: cover; border-radius: 6px; box-shadow: 0 2px 6px rgb(0 0 0 / .25);
+  animation: fx-deal .35s ease-out backwards; animation-delay: calc(.1s + var(--i) * 150ms); }
+/* After the hand is shown, the returned cards drop away and the kept card slides to the middle. */
+.fx-backs-cards img.leave { animation: fx-deal .35s ease-out backwards, fx-return .6s ease-in 1.2s forwards;
+  animation-delay: calc(.1s + var(--i) * 150ms), calc(1.2s + var(--i) * 120ms); }
+@keyframes fx-deal { from { opacity: 0; translate: 0 -14px; } }
+@keyframes fx-return { 60% { opacity: 0; translate: 0 26px; width: 60px; margin: 0 4px; } to { opacity: 0; translate: 0 26px; width: 0; margin: 0; } }
+@keyframes fx-fade { from { opacity: 0; } }
 .fx-name { font-size: 1.7rem; font-weight: 800; color: var(--warn); display: flex; justify-content: center; flex-wrap: wrap; margin-top: 4px; }
 .dust span { display: inline-block; animation: dust 1.3s ease-in forwards; animation-delay: calc(.6s + var(--i) * 60ms); }
 @keyframes fx-in { from { opacity: 0; transform: translateY(10px) scale(.97); } }
@@ -183,7 +204,9 @@ body.has-bar .toast { bottom: calc(140px + env(safe-area-inset-bottom)); }
 }
 @media (prefers-reduced-motion: reduce) {
   /* No crumbling: the name simply stays red. */
-  .fx-card, .dust span, .spinner { animation: none; }
+  .fx-card, .dust span, .spinner, .fx-backs-cards img, .fx-backs-cards img.leave, .fx-chancellor-art .fx-backs-label { animation: none; }
+  /* No motion: show the final state, with the returned cards faded. */
+  .fx-backs-cards img.leave { opacity: .3; }
 }
 
 /* round / game result */

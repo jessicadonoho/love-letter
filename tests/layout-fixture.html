@@ -35,7 +35,7 @@
     const artFor = (r) => (art === 'all' || (art === 'some' && r !== ranks[0]) ? `../art/${r}.jpg` : null);
     const cards = ranks.map((rank, i) => ({ id: i, rank }));
     document.getElementById('root').innerHTML =
-      handGridHTML(cards, { artFor, cardOpts: (c) => ({ selectable: true, note: q.get('note') && c.id === 0 ? 'If you hold a King, Viscount, or Princess, you must play the Countess.' : '' }) });
+      handGridHTML(cards, { artFor, cardOpts: (c) => ({ selectable: true, note: q.get('note') && c.id === 0 ? 'If you hold a King, Viscount, Chancellor, or Princess, you must play the Countess.' : '' }) });
 
     await Promise.all([...document.images].map((img) => img.decode().catch(() => {})));
     await document.fonts.ready;

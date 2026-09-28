@@ -11,7 +11,7 @@ export const CARDS = [
   { rank: 5, name: 'Viscount',   count: 2, text: 'Choose any player (even yourself). They discard their hand and draw a new card.' },
   { rank: 6, name: 'Chancellor', count: 2, text: 'Draw 2 cards. Keep 1 of your 3 cards and put the other 2 on the bottom of the deck.' },
   { rank: 7, name: 'King',       count: 1, text: 'Trade hands with another player.' },
-  { rank: 8, name: 'Countess',   count: 1, text: 'If you hold a King, Viscount, or Princess, you must play this card.' },
+  { rank: 8, name: 'Countess',   count: 1, text: 'If you hold a King, Viscount, Chancellor, or Princess, you must play this card.' },
   { rank: 9, name: 'Princess',   count: 1, text: 'If you play or discard her, you are out.' },
 ];
 
@@ -19,8 +19,8 @@ export const cardName = (rank) => CARDS[rank].name;
 export const cardLabel = (rank) => `${rank} ${cardName(rank)}`;
 // Holding the Countess (8) with any of these ranks forces you to play the Countess.
 export const COUNTESS = 8;
-export const FORCES_COUNTESS = [5, 7, 9];
-export const FORCED_PLAY_REASON = `If you hold a King, ${cardName(5)}, or Princess, you must play the Countess.`;
+export const FORCES_COUNTESS = [5, 6, 7, 9];
+export const FORCED_PLAY_REASON = `If you hold a King, ${cardName(5)}, ${cardName(6)}, or Princess, you must play the Countess.`;
 export const TOKENS_TO_WIN = { 2: 6, 3: 5, 4: 4, 5: 3, 6: 3 };
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 6;
@@ -129,6 +129,7 @@ export function startRound(g, rng = Math.random) {
     p.discards = [];
     p.alive = !p.left;
     p.protected = false;
+    p.outSeq = null;
   }
   // Previous round's winner starts; otherwise random.
   const first = g.players.findIndex((p) => !p.left && g.lastWinners.includes(p.id));
@@ -171,6 +172,7 @@ function eliminate(g, p, why, { quiet = false } = {}) {
   p.hand = [];
   say(g, `${p.name} is out${why ? ` (${why})` : ''}${revealed.length ? ` — discarded ${revealed.join(', ')}` : ''}.`);
   if (!quiet) emit(g, 'eliminated', { player: p.id, name: p.name, why });
+  p.outSeq = g.seq;   // no more popups for this player until the next round
 }
 
 /** Valid targets for playing `rank` by player `pid`. Empty array = card has no effect. */
@@ -181,7 +183,7 @@ export function validTargets(g, pid, rank) {
   return mode === 'any' ? [...others, pid] : others;
 }
 
-/** True if the Countess rule forbids playing this card (you hold the Countess plus a King, Viscount, or Princess). */
+/** True if the Countess rule forbids playing this card (you hold the Countess plus a King, Viscount, Chancellor, or Princess). */
 export function countessBlocks(hand, card) {
   const hasCountess = hand.some((c) => c.rank === COUNTESS);
   const hasForcing = hand.some((c) => FORCES_COUNTESS.includes(c.rank));
@@ -246,6 +248,8 @@ function playCard(g, pid, a) {
       say(g, `🔍 ${target.name} holds ${cardName(target.hand[0].rank)} (${target.hand[0].rank}).`, [me.id]);
       // Private: only the acting player learns the card.
       emit(g, 'reveal', { actor: me.id, target: target.id, name: target.name, rank: target.hand[0].rank }, [me.id]);
+      // The target is told who looked (the card shown is their own).
+      emit(g, 'seen', { actor: me.id, actorName: me.name, rank: target.hand[0].rank }, [target.id]);
       break;
     case 3: {
       if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
@@ -293,6 +297,7 @@ function playCard(g, pid, a) {
         return { ok: true };
       }
       say(g, 'The deck is empty — no effect.');
+      emit(g, 'chancellor', { actor: me.id, name: me.name, count: 0 }, g.players.filter((p) => p !== me).map((p) => p.id));
       break;
     case 7:
       if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
@@ -300,6 +305,12 @@ function playCard(g, pid, a) {
       [me.hand, target.hand] = [target.hand, me.hand];
       say(g, `👑 You gave ${cardName(target.hand[0].rank)} and got ${cardName(me.hand[0].rank)}.`, [me.id]);
       say(g, `👑 You gave ${cardName(me.hand[0].rank)} and got ${cardName(target.hand[0].rank)}.`, [target.id]);
+      {
+        // Everyone else learns who traded; only the target is told which card they got.
+        const trade = { actor: me.id, actorName: me.name, target: target.id, targetName: target.name };
+        emit(g, 'trade', trade, g.players.filter((p) => p !== me && p !== target).map((p) => p.id));
+        emit(g, 'trade', { ...trade, gave: me.hand[0].rank, got: target.hand[0].rank }, [target.id]);
+      }
       break;
     case 8:
       say(g, `${me.name} played Countess.`);
@@ -326,6 +337,8 @@ function chancellorReturn(g, pid, a) {
   me.hand = [keep];
   g.deck.unshift(...order);
   say(g, `${me.name} kept one card and put ${order.length} on the bottom of the deck.`);
+  // Only for the other players, and only how many cards moved — never which.
+  emit(g, 'chancellor', { actor: me.id, name: me.name, count: order.length }, g.players.filter((p) => p !== me).map((p) => p.id));
   endTurn(g);
   return { ok: true };
 }
@@ -423,7 +436,8 @@ export function viewFor(g, pid) {
     winnerIds: g.winnerIds,
     log: g.log.filter((e) => !e.to || e.to.includes(pid)).slice(-60),
     // Private events are filtered here, on the host, so they never reach other phones.
-    events: (g.events || []).filter((e) => !e.to || e.to.includes(pid)).slice(-20)
+    // Players who are out of the round stop getting popups (they still see their own exit).
+    events: (g.events || []).filter((e) => (!e.to || e.to.includes(pid)) && !(me?.outSeq != null && e.seq > me.outSeq)).slice(-20)
       .map(({ to, ...e }) => e),
   };
 }

@@ -10,16 +10,18 @@ export const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', 
  * in a hand line up row by row (see `.hand` in style.css).
  * `artSlot`: reserve the image area even if this card has no image, so cards match.
  */
-export function cardHTML(c, { art = null, artSlot = !!art, selectable, selected, note = '' } = {}) {
+export function cardHTML(c, { art = null, artSlot = !!art, selectable, selected, note = '', still = false } = {}) {
   const info = CARDS[c.rank];
   const artHTML = art
     ? `<span class="art"><img src="${esc(art)}" alt=""></span>`
     : artSlot ? `<span class="art art-empty" aria-hidden="true"><span>${c.rank}</span></span>` : '';
-  return `<button class="card r${c.rank} ${artSlot ? 'has-art' : ''} ${selected ? 'selected' : ''} ${note ? 'blocked' : ''}" ${selectable ? `data-a="pick" data-id="${c.id}" aria-pressed="${selected ? 'true' : 'false'}"` : 'disabled'}>
+  // `still`: a picture of a card (e.g. in a popup), not a control.
+  const tag = still ? 'div' : 'button';
+  return `<${tag} class="card r${c.rank} ${artSlot ? 'has-art' : ''} ${selected ? 'selected' : ''} ${note ? 'blocked' : ''}" ${still ? '' : selectable ? `data-a="pick" data-id="${c.id}" aria-pressed="${selected ? 'true' : 'false'}"` : 'disabled'}>
     ${artHTML}
     <span class="card-head"><span class="rank">${c.rank}</span><span class="cname">${info.name}</span></span>
     <span class="ctext">${info.text}</span>
-    <span class="note">${esc(note)}</span></button>`;
+    <span class="note">${esc(note)}</span></${tag}>`;
 }
 
 /** A row of cards that share a layout grid. `artFor(rank)` returns an image URL or null. */
@@ -70,8 +72,13 @@ export function describeEvent(ev, me) {
     }
     case 'reveal':
       return {
-        icon: '🗡️', title: `${cardName(2)}: ${ev.name}'s card`,
+        icon: '🗡️', card: ev.rank, title: `${cardName(2)}: ${ev.name}'s card`,
         text: `${ev.name} holds ${cardLabel(ev.rank)}. Only you can see this.`,
+      };
+    case 'seen':
+      return {
+        icon: '👀', card: ev.rank, title: `${cardName(2)}: ${ev.actorName} saw your card`,
+        text: `${ev.actorName} used the ${cardName(2)} and now knows you hold ${cardLabel(ev.rank)}.`,
       };
     case 'eliminated':
       return {
@@ -98,6 +105,24 @@ export function describeEvent(ev, me) {
         icon: '🃏', title: `${cardName(5)}: ${you(ev.target) ? 'you' : ev.name} discarded a card`,
         text: `${you(ev.target) ? 'You' : ev.name} discarded ${cardLabel(ev.rank)}${ev.out ? '.' : ' and drew a new card.'}`,
       };
+    case 'trade':
+      // The King player gets no popup; the target is alerted and shown their new card.
+      if (you(ev.target)) {
+        return {
+          icon: '👑', swap: { gave: ev.gave, got: ev.got }, title: `${cardName(7)}: ${ev.actorName} traded hands with you`,
+          text: `${ev.actorName} used the ${cardName(7)} on you. You gave ${cardLabel(ev.gave)} and got ${cardLabel(ev.got)}.`,
+        };
+      }
+      return { icon: '👑', title: `${cardName(7)}: ${ev.actorName} ⇄ ${ev.targetName}`, text: `${ev.actorName} used the ${cardName(7)} and traded hands with ${ev.targetName}.` };
+    case 'chancellor': {
+      // Shown to the other players only; card backs stand in for the unknown cards.
+      if (!ev.count) return { icon: '📜', title: `${cardName(6)}: no effect`, text: `The deck was empty, so ${ev.name} drew nothing.` };
+      const n = ev.count === 1 ? '1 card' : `${ev.count} cards`;
+      return {
+        title: `${ev.name} played the ${cardName(6)}`, backs: ev.count,
+        text: `${ev.name} drew ${n}, kept 1, and put ${n} face down on the bottom of the deck.`,
+      };
+    }
     case 'left':
       return { icon: '👋', title: `${ev.name} left the game`, text: `${ev.name} is out and won't take any more turns.` };
     default:
@@ -110,13 +135,42 @@ function dustHTML(name) {
   return [...name].map((ch, i) => `<span style="--i:${i};--dx:${((i * 37) % 21) - 10}px;--dy:${-8 - ((i * 13) % 12)}px">${ch === ' ' ? '&nbsp;' : esc(ch)}</span>`).join('');
 }
 
-/** The popup for one event. `remaining` = how many more are queued behind it. */
-export function fxHTML(ev, me, remaining = 0) {
+export const CARD_BACK = 'art/back_of_card.jpg';
+
+/**
+ * Chancellor: the player's hand of `n + 1` face-down cards, then all but one slide away
+ * to the bottom of the deck. The middle card stays, so the one kept isn't obvious.
+ */
+function backsHTML(n) {
+  const keep = n >= 2 ? 1 : 0;
+  const cards = Array.from({ length: n + 1 }, (_, i) =>
+    `<img src="${CARD_BACK}" alt="" class="${i === keep ? 'kept' : 'leave'}" style="--i:${i}">`).join('');
+  return `<div class="fx-chancellor-art" aria-hidden="true">
+    <div class="fx-backs-cards">${cards}</div>
+    <span class="fx-backs-label">Kept 1 · ${n} to the bottom of the deck</span>
+  </div>`;
+}
+
+/** Two cards side by side: the one you gave and the one you got. */
+function swapHTML({ gave, got }, artFor) {
+  const col = (label, rank) => `<div class="fx-swap-col"><span class="fx-backs-label">${label}</span>${
+    handGridHTML([{ id: 'fx', rank }], { artFor, cardOpts: () => ({ still: true }) })}</div>`;
+  return `<div class="fx-swap">${col('You gave', gave)}<span class="fx-swap-arrow" aria-hidden="true">⇄</span>${col('You got', got)}</div>`;
+}
+
+/**
+ * The popup for one event. `remaining` = how many more are queued behind it.
+ * `artFor(rank)` returns a card image URL or null (for events that show a card).
+ */
+export function fxHTML(ev, me, remaining = 0, { artFor = () => null } = {}) {
   const d = describeEvent(ev, me);
   if (!d) return '';
   return `<div class="fx" data-fx="backdrop">
     <div class="fx-card fx-${ev.type}" role="dialog" aria-modal="true" aria-labelledby="fx-title" aria-describedby="fx-text">
-      <div class="fx-icon" aria-hidden="true">${d.icon}</div>
+      ${d.backs ? backsHTML(d.backs)
+        : d.swap ? swapHTML(d.swap, artFor)
+        : d.card != null ? `<div class="fx-shown-card">${handGridHTML([{ id: 'fx', rank: d.card }], { artFor, cardOpts: () => ({ still: true }) })}</div>`
+        : `<div class="fx-icon" aria-hidden="true">${d.icon}</div>`}
       ${d.dust ? `<div class="fx-name dust" aria-hidden="true">${dustHTML(d.dust)}</div>` : ''}
       <h2 id="fx-title">${esc(d.title)}</h2>
       <p id="fx-text">${esc(d.text)}</p>

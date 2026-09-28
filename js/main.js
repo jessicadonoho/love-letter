@@ -249,7 +249,7 @@ function renderFx() {
   const ev = S.fxQueue[0];
   if (!ev) { $fx.innerHTML = ''; restoreFocus(fxReturnFocus); fxReturnFocus = null; startParty(); return; }
   if (!$fx.firstChild) fxReturnFocus = focusKey();
-  $fx.innerHTML = fxHTML(ev, S.view?.me ?? clientId, S.fxQueue.length - 1);
+  $fx.innerHTML = fxHTML(ev, S.view?.me ?? clientId, S.fxQueue.length - 1, { artFor: (r) => ART[r] || null });
   if (!$fx.firstChild) { S.fxQueue.shift(); renderFx(); return; } // unknown event type
   $fx.querySelector('[data-fx="ok"]').focus();
 }
@@ -485,7 +485,8 @@ function actionPanelHTML(v, c) {
       <div class="opts">${c.targets.map((id) => `<button class="opt ${S.target === id ? 'on' : ''}" data-a="target" data-id="${esc(id)}">${esc(id === v.me ? 'Me' : nameOf(id))}</button>`).join('')}</div>`;
     if (c.rank === 1) {
       body += `<div class="label">Guess their card</div><div class="opts guess">${
-        [0, 2, 3, 4, 5, 6, 7, 8, 9].map((r) => `<button class="opt ${S.guess === r ? 'on' : ''}" data-a="guess" data-r="${r}">${r} ${cardName(r)}</button>`).join('')}</div>`;
+        // (n) = copies in the whole deck, not how many are left.
+        [0, 2, 3, 4, 5, 6, 7, 8, 9].map((r) => `<button class="opt ${S.guess === r ? 'on' : ''}" data-a="guess" data-r="${r}" aria-label="${r} ${cardName(r)}, ${CARDS[r].count} in the deck">${r} ${cardName(r)} <span class="muted">(${CARDS[r].count})</span></button>`).join('')}</div>`;
     }
   }
   if (c.rank === 9) body += '<p class="warn">Playing the Princess knocks you out of the round!</p>';
