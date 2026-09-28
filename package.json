@@ -1,0 +1,11 @@
+{
+  "name": "love-letter-phones",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Play Love Letter (2019 rules) with friends, each on their own phone.",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "dev": "npx --yes http-server -c-1 -p 8080 ."
+  }
+}

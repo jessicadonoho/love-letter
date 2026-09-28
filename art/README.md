@@ -1,0 +1,22 @@
+# Card art
+
+Put one image per card in this folder, named by the card's number:
+
+| File | Card |
+|---|---|
+| `0.png` | Spy |
+| `1.png` | Guard |
+| `2.png` | Priest |
+| `3.png` | Baron |
+| `4.png` | Handmaid |
+| `5.png` | Prince |
+| `6.png` | Chancellor |
+| `7.png` | King |
+| `8.png` | Countess |
+| `9.png` | Princess |
+
+- `.png`, `.jpg`, `.jpeg`, `.webp`, and `.svg` all work. Each card uses the first one it finds.
+- The art shows in a **4:3 box** at the top of the card and is cropped to fit. The number, name, and rule text always show underneath, so don't put the rules in the image itself.
+- Keep each file small (around 800×600 and under 200 KB) so it loads fast on phones.
+- You can add art for just some cards. Cards without an image keep the text-only look.
+- Only use art you have the rights to use (your own, commissioned, or licensed), especially if the site is public.
