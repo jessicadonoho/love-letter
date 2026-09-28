@@ -24,9 +24,11 @@ If someone taps **Leave** during a game, they're out for the rest of that game a
 1. Create a new public repo on GitHub, for example `love-letter`.
 2. Upload every file in this folder (`index.html`, `style.css`, `js/`, etc.) to the repo.
    - Or, from a terminal: `git init && git add . && git commit -m "Love Letter" && git branch -M main && git remote add origin https://github.com/<you>/love-letter.git && git push -u origin main`
-3. In the repo, open **Settings → Pages**. Under "Build and deployment," choose **Deploy from a branch**, then **main** and **/ (root)**, and save.
+3. In the repo, open **Settings → Pages**. Under "Build and deployment," set **Source** to **GitHub Actions**. The included workflow (`.github/workflows/pages.yml`) then runs the tests and deploys on every push to `main`.
 4. After a minute or so, the site is live at `https://<you>.github.io/love-letter/`. Everyone opens that link.
-5. **When you push an update**, change the `?v=` version in `index.html` (it appears five times, and they must all match; `npm test` checks this). GitHub Pages lets browsers cache files for 10 minutes. The new version makes phones load all the new files together instead of mixing old and new ones. After deploying, reload the page. If it still looks old, wait up to 10 minutes or do a hard refresh.
+5. **Checking an update went through:** the home screen shows the version under the title, e.g. `Version 59d28cb · "fix maid popup" · Sep 28, 12:17 PM`. That's the commit's short ID and message, so it should match your latest commit (`git log --oneline -1`). If a newer version is already live but the phone still shows an older one, a yellow note appears with a **Reload** button. When you run the site locally it says `Version: dev`.
+
+The workflow also stamps every file URL with the commit ID (`?v=…`), so phones never mix cached old files with new ones. There's nothing to bump by hand. You can check the deploy's progress in the repo's **Actions** tab.
 
 Netlify Drop, Cloudflare Pages, or any other static host works too. Just upload the folder.
 

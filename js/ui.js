@@ -125,3 +125,46 @@ export function fxHTML(ev, me, remaining = 0) {
     </div>
   </div>`;
 }
+
+// ---------- end-of-round / end-of-game result ----------
+
+export const RESULT_ART = { won: 'art/you-won.jpg', lost: 'art/you-lost.jpeg' };
+
+/**
+ * "You won!" / "You lost" banner with artwork.
+ * scope: 'round' or 'game'. `winnerNames`: everyone who won (you may be one of them).
+ */
+export function resultHeroHTML({ won, scope, winnerNames = [], otherWinners = [] }) {
+  const what = scope === 'game' ? 'the game' : 'this round';
+  const title = won ? 'You won!' : 'You lost';
+  const sub = won
+    ? `You won ${what}${otherWinners.length ? ` (tied with ${otherWinners.map(esc).join(' & ')})` : ''}.`
+    : winnerNames.length ? `${winnerNames.map(esc).join(' & ')} won ${what}.` : `You didn't win ${what}.`;
+  return `<div class="result-hero ${won ? 'won' : 'lost'}" role="status">
+    <img src="${won ? RESULT_ART.won : RESULT_ART.lost}" alt="">
+    <h2>${won ? '<span aria-hidden="true">💖 </span>' : ''}${title}</h2>
+    <p>${sub}</p>
+  </div>`;
+}
+
+const CONFETTI_COLORS = ['#ff4f8b', '#e0115f', '#ff9ec4', '#c8102e', '#ffc2d9', '#b3003c'];
+
+/** Falling confetti: pink and red paper bits plus hearts. `rng` makes it testable. */
+export function confettiHTML(count = 90, rng = Math.random) {
+  const pieces = [];
+  for (let i = 0; i < count; i++) {
+    const color = CONFETTI_COLORS[Math.floor(rng() * CONFETTI_COLORS.length)];
+    const kind = i % 3 === 0 ? 'heart' : i % 3 === 1 ? 'strip' : 'dot';
+    const style = [
+      `left:${(rng() * 100).toFixed(1)}%`,
+      `--c:${color}`,
+      `--delay:${(rng() * 1.8).toFixed(2)}s`,
+      `--dur:${(2.8 + rng() * 2.2).toFixed(2)}s`,
+      `--sway:${Math.round(rng() * 120 - 60)}px`,
+      `--spin:${Math.round(rng() * 720 - 360)}deg`,
+      `--size:${kind === 'heart' ? Math.round(14 + rng() * 14) : Math.round(7 + rng() * 6)}px`,
+    ].join(';');
+    pieces.push(`<span class="confetti-${kind}" style="${style}">${kind === 'heart' ? '♥' : ''}</span>`);
+  }
+  return `<div class="confetti" aria-hidden="true">${pieces.join('')}</div>`;
+}

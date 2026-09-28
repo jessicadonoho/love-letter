@@ -3,7 +3,7 @@ import {
   createGame, addPlayer, leavePlayer, startGame, startRound, applyAction, viewFor,
 } from './engine.js';
 import { Host, Client } from './net.js';
-import { esc, handGridHTML, useBarHTML, fxHTML } from './ui.js';
+import { esc, handGridHTML, useBarHTML, fxHTML, resultHeroHTML, confettiHTML } from './ui.js';
 
 // ---------- local identity & storage ----------
 
@@ -23,6 +23,8 @@ const SESSION_KEY = 'session' + (params.get('as') ? '.' + params.get('as') : '')
 const SESSION_TTL = 12 * 60 * 60 * 1000;
 // Last effect-popup event seen, so refreshes and repeated syncs never replay a popup.
 const FX_KEY = 'fxSeen' + (params.get('as') ? '.' + params.get('as') : '');
+// Last result celebrated with confetti, so a refresh doesn't celebrate again.
+const PARTY_KEY = 'celebrated' + (params.get('as') ? '.' + params.get('as') : '');
 
 // ---------- app state ----------
 
@@ -146,6 +148,7 @@ function broadcast() {
   S.online = online;
   if (prevPhase !== S.view.phase) resetSelection();
   ingestEvents(S.view);
+  celebrate(S.view);
   store.set(SESSION_KEY, { role: 'host', code: S.code, game, savedAt: Date.now() });
   render();
 }
@@ -174,6 +177,7 @@ function joinRoom(code, quiet = false) {
         S.submitting = false;
         if (!prev || prev.phase !== msg.view.phase || prev.turnPlayer !== msg.view.turnPlayer) resetSelection();
         ingestEvents(S.view);
+        celebrate(S.view);
         store.set(SESSION_KEY, { role: 'client', code: S.code, savedAt: Date.now() });
         keepAwake();
         render();
@@ -243,7 +247,7 @@ let fxReturnFocus = null;
 
 function renderFx() {
   const ev = S.fxQueue[0];
-  if (!ev) { $fx.innerHTML = ''; restoreFocus(fxReturnFocus); fxReturnFocus = null; return; }
+  if (!ev) { $fx.innerHTML = ''; restoreFocus(fxReturnFocus); fxReturnFocus = null; startParty(); return; }
   if (!$fx.firstChild) fxReturnFocus = focusKey();
   $fx.innerHTML = fxHTML(ev, S.view?.me ?? clientId, S.fxQueue.length - 1);
   if (!$fx.firstChild) { S.fxQueue.shift(); renderFx(); return; } // unknown event type
@@ -300,6 +304,32 @@ function render() {
   restoreFocus(key);
 }
 
+// ---------- version ----------
+// The deploy workflow stamps <meta name="app-version"> with the commit (see scripts/stamp-version.mjs).
+const VERSION_META = document.querySelector('meta[name="app-version"]');
+const APP_VERSION = {
+  sha: VERSION_META?.content || 'dev',
+  message: VERSION_META?.dataset.message || '',
+  date: VERSION_META?.dataset.date || '',
+};
+
+function versionHTML() {
+  if (APP_VERSION.sha === 'dev') return '<p class="version muted small">Version: dev (running locally)</p>';
+  const when = APP_VERSION.date ? new Date(APP_VERSION.date).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '';
+  const newer = S.newerVersion;
+  return `<p class="version muted small">Version ${esc(APP_VERSION.sha)}${APP_VERSION.message ? ` · “${esc(APP_VERSION.message)}”` : ''}${when ? ` · ${esc(when)}` : ''}</p>
+    ${newer ? `<p class="version-new small">Newer version ${esc(newer.sha)} (“${esc(newer.message)}”) is live. <button class="chip" data-a="reload">Reload</button></p>` : ''}`;
+}
+
+/** Ask the server (bypassing the cache) which version is deployed; offer a reload if it's newer. */
+async function checkForUpdate() {
+  if (APP_VERSION.sha === 'dev') return;
+  try {
+    const live = await (await fetch('version.json', { cache: 'no-store' })).json();
+    if (live.sha && live.sha !== APP_VERSION.sha) { S.newerVersion = live; if (S.screen === 'home') render(); }
+  } catch { /* offline, or not deployed by the workflow */ }
+}
+
 function homeHTML() {
   const sess = store.get(SESSION_KEY);
   const canResume = sess && Date.now() - sess.savedAt < SESSION_TTL;
@@ -308,17 +338,21 @@ function homeHTML() {
   <main class="home">
     <h1>Love Letter</h1>
     <p class="sub">Each player uses their own phone. One person hosts, everyone else joins with the room code.</p>
+    ${versionHTML()}
     <label class="field">Your name
       <input id="name" maxlength="16" autocomplete="nickname" value="${esc(S.name)}" placeholder="e.g. Jess">
     </label>
     ${canResume ? `<button class="btn primary" data-a="resume">Rejoin room ${esc(sess.code)}${sess.role === 'host' ? ' (as host)' : ''}</button>` : ''}
-    <button class="btn ${canResume ? '' : 'primary'}" data-a="host">Host a new room</button>
-    <div class="or">or join a friend</div>
+    <label class="field" for="code">Join a friend's room</label>
     <div class="join">
-      <input id="code" maxlength="4" autocapitalize="characters" autocomplete="off" placeholder="CODE" value="${esc(prefill)}">
-      <button class="btn" data-a="join">Join</button>
+      <input id="code" maxlength="4" autocapitalize="characters" autocomplete="off" placeholder="CODE" value="${esc(prefill)}" aria-label="Room code">
+      <button class="btn ${canResume ? '' : 'primary'}" data-a="join">Join</button>
     </div>
     <button class="link" data-a="rules">How to play / card list</button>
+    <!-- Hosting is last on purpose: new players kept tapping it instead of joining. -->
+    <div class="or">or start your own game</div>
+    <button class="btn" data-a="host">Host a new room</button>
+    <p class="muted small center">Only one person in your group should host.</p>
   </main>`;
 }
 
@@ -476,12 +510,54 @@ function chancellorHTML(v) {
   return `<h2>Tap the card to keep</h2>${cards}${order ? `<section class="action">${order}</section>` : ''}`;
 }
 
+/** Who won what, from my point of view, once a round or the game is over. */
+function outcome(v) {
+  if (v.phase !== 'roundOver' && v.phase !== 'gameOver') return null;
+  const scope = v.phase === 'gameOver' ? 'game' : 'round';
+  const winners = scope === 'game' ? v.winnerIds : v.roundResult?.winners || [];
+  return { scope, winners, won: winners.includes(v.me) };
+}
+
+// Confetti lives outside #app (like the popups) so re-renders don't restart it.
+const $party = document.createElement('div');
+$party.id = 'party';
+document.body.append($party);
+let partyTimer;
+
+function celebrate(v) {
+  const o = outcome(v);
+  if (!o) return;
+  const key = `${S.code}:${v.round}:${v.phase}`;
+  const last = store.get(PARTY_KEY);
+  store.set(PARTY_KEY, key);
+  // Only celebrate results that happen while you're watching, never on a refresh or rejoin.
+  if (!o.won || last === key) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  partyPending = o.scope === 'game' ? 140 : 90;
+  if (!S.fxQueue.length) startParty();   // otherwise it starts when the last popup is closed
+}
+
+let partyPending = 0;
+function startParty() {
+  if (!partyPending) return;
+  $party.innerHTML = confettiHTML(partyPending);
+  partyPending = 0;
+  clearTimeout(partyTimer);
+  partyTimer = setTimeout(() => { $party.innerHTML = ''; }, 7500);
+}
+
 function resultHTML(v) {
   const r = v.roundResult;
   const isHost = S.role === 'host';
+  const o = outcome(v);
+  const hero = o ? resultHeroHTML({
+    won: o.won, scope: o.scope,
+    winnerNames: o.winners.map(nameOf),
+    otherWinners: o.winners.filter((id) => id !== v.me).map(nameOf),
+  }) : '';
   const rows = r ? Object.entries(r.hands).map(([id, rank]) =>
     `<li>${esc(nameOf(id))}: <strong>${rank} ${cardName(rank)}</strong>${r.winners.includes(id) ? ' 💌' : ''}${r.spyBonus === id ? ' +1 Spy' : ''}</li>`).join('') : '';
-  return `<section class="card-panel">
+  return `${hero}<section class="card-panel">
     ${r ? `<p>${esc(r.reason)}</p><p><strong>${r.winners.map(nameOf).map(esc).join(' & ')}</strong> ${r.winners.length > 1 ? 'win' : 'wins'} the round.</p>
     ${r.spyBonus ? `<p>${esc(nameOf(r.spyBonus))} gets +1 for the Spy.</p>` : ''}
     ${rows ? `<div class="label">Final hands</div><ul class="plain">${rows}</ul>` : ''}
@@ -550,6 +626,7 @@ $app.addEventListener('click', async (e) => {
       if (confirmLeave()) leave();
       break;
     case 'rules': S.showRules = true; render(); break;
+    case 'reload': location.reload(); break;
     case 'closeRules': S.showRules = false; render(); break;
     case 'share': {
       const link = el.dataset.link;
@@ -622,6 +699,8 @@ Promise.all(CARDS.map(async (c) => { const url = await findArt(c.rank); if (url)
   .then(() => { if (Object.keys(ART).length) render(); });
 
 // Auto-rejoin after a refresh; prefill code from ?room=
+checkForUpdate();
+
 (function boot() {
   const sess = store.get(SESSION_KEY);
   if (sess && Date.now() - sess.savedAt < SESSION_TTL && S.name && !params.get('room')) {

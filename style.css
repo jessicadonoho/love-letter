@@ -39,6 +39,9 @@ input { font: inherit; font-size: 1rem; padding: 12px; border-radius: 10px; bord
 .field { display: block; margin: 16px 0; font-weight: 600; }
 .field input { margin-top: 6px; font-weight: 400; }
 .home .sub { color: var(--muted); margin-top: 0; }
+.version { margin: -4px 0 0; overflow-wrap: anywhere; }
+.version-new { margin: 6px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--private); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.home .field[for="code"] { margin-bottom: 6px; }
 .or { text-align: center; color: var(--muted); margin: 18px 0 8px; font-size: .9rem; }
 .join { display: flex; gap: 8px; }
 .join input { text-transform: uppercase; letter-spacing: .3em; text-align: center; font-weight: 700; }
@@ -81,7 +84,10 @@ input { font: inherit; font-size: 1rem; padding: 12px; border-radius: 10px; bord
 .card { position: relative; text-align: left; padding: 12px; border-radius: 14px; border: 2px solid var(--line); background: var(--panel);
   display: grid; grid-template-rows: subgrid; grid-row: span 3; row-gap: 4px; align-content: start; min-width: 0; min-height: 150px; }
 .card.has-art { grid-row: span 4; }
-.hand[data-count="1"] > .card { grid-column: 1 / -1; justify-self: center; width: calc(50% - 5px); }
+/* A lone card is as wide as one card in a pair. The width comes from the grid column, not a
+   percentage width on the card: Firefox (Android) sized the rows as if the card were full width,
+   leaving a gap under the art and cutting off the rule text. */
+.hand[data-count="1"] { grid-template-columns: minmax(0, calc(50% - 5px)); justify-content: center; }
 .card:disabled { opacity: 1; }
 .card:not(:disabled) { cursor: pointer; }
 .card.selected { border-color: var(--accent); background: var(--soft); }
@@ -179,3 +185,25 @@ body.has-bar .toast { bottom: calc(140px + env(safe-area-inset-bottom)); }
   /* No crumbling: the name simply stays red. */
   .fx-card, .dust span, .spinner { animation: none; }
 }
+
+/* round / game result */
+.result-hero { margin: 4px 0 10px; padding: 14px; border-radius: 14px; text-align: center; border: 1px solid var(--line); background: var(--panel); }
+.result-hero img { display: block; width: 100%; max-height: 42vh; object-fit: contain; border-radius: 10px; margin: 0 auto 10px; }
+.result-hero h2 { font-size: 1.6rem; margin: 4px 0; }
+.result-hero p { margin: 0; }
+.result-hero.won { background: var(--soft); border-color: var(--accent); }
+.result-hero.won h2 { color: var(--accent); }
+.result-hero.lost img { filter: grayscale(.2); }
+
+/* winner confetti: pink, red, and hearts */
+.confetti { position: fixed; inset: 0; z-index: 45; pointer-events: none; overflow: hidden; }
+.confetti > span { position: absolute; top: -40px; display: block; animation: confetti-fall var(--dur) cubic-bezier(.3, .6, .5, 1) var(--delay) forwards; opacity: 0; }
+.confetti-strip { width: calc(var(--size) * .6); height: calc(var(--size) * 1.6); background: var(--c); border-radius: 2px; }
+.confetti-dot { width: var(--size); height: var(--size); background: var(--c); border-radius: 50%; }
+.confetti-heart { color: var(--c); font-size: var(--size); line-height: 1; }
+@keyframes confetti-fall {
+  0% { opacity: 1; transform: translate(0, 0) rotate(0); }
+  85% { opacity: 1; }
+  100% { opacity: 0; transform: translate(var(--sway), 110vh) rotate(var(--spin)); }
+}
+@media (prefers-reduced-motion: reduce) { .confetti { display: none; } }

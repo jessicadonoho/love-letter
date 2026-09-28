@@ -180,3 +180,74 @@ test('index.html uses one cache-busting version for every file', () => {
     assert.ok(html.includes(`js/${f}?v=`), `js/${f} has no version in index.html`);
   }
 });
+
+// ---------- results ----------
+
+import { resultHeroHTML, confettiHTML, RESULT_ART } from '../js/ui.js';
+import { existsSync } from 'node:fs';
+
+test('result hero: you won / you lost with the right image and text', () => {
+  const won = resultHeroHTML({ won: true, scope: 'game', winnerNames: ['Ann'] });
+  assert.match(won, /You won!/);
+  assert.match(won, /You won the game\./);
+  assert.ok(won.includes(RESULT_ART.won));
+  const lost = resultHeroHTML({ won: false, scope: 'round', winnerNames: ['Bea'] });
+  assert.match(lost, /You lost/);
+  assert.match(lost, /Bea won this round\./);
+  assert.ok(lost.includes(RESULT_ART.lost));
+  assert.match(resultHeroHTML({ won: true, scope: 'round', otherWinners: ['Cy'] }), /tied with Cy/);
+  assert.match(lost, /role="status"/);
+  assert.ok(!resultHeroHTML({ won: false, scope: 'game', winnerNames: ['<b>'] }).includes('<b>'));
+  for (const f of Object.values(RESULT_ART)) assert.ok(existsSync(new URL(f, root)), `${f} exists`);
+});
+
+test('confetti: pink and red pieces with hearts, decorative only', () => {
+  let seed = 1;
+  const html = confettiHTML(30, () => ((seed = (seed * 16807) % 2147483647) / 2147483647));
+  assert.match(html, /class="confetti" aria-hidden="true"/);
+  assert.equal(html.match(/<span class="confetti-/g).length, 30);
+  assert.equal(html.match(/confetti-heart[^>]*>♥</g).length, 10);
+  const colors = new Set(html.match(/--c:(#[0-9a-f]+)/g).map((m) => m.slice(4)));
+  for (const c of colors) {
+    const [r, g, b] = [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16));
+    assert.ok(r > g && r > b, `${c} is pink/red`);
+  }
+  assert.match(read('style.css'), /prefers-reduced-motion: reduce\) \{ \.confetti \{ display: none; \} \}/);
+});
+
+// ---------- home screen & version stamping ----------
+
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
+test('home screen: hosting comes after joining, name, and rules', () => {
+  const src = read('js/main.js');
+  const home = src.slice(src.indexOf('function homeHTML'), src.indexOf('function roomHTML'));
+  const at = (s) => { const i = home.indexOf(s); assert.ok(i >= 0, s); return i; };
+  const host = at('data-a="host"');
+  for (const before of ['id="name"', 'data-a="resume"', 'id="code"', 'data-a="join"', 'data-a="rules"']) {
+    assert.ok(at(before) < host, `${before} comes before Host`);
+  }
+  assert.ok(!/class="btn primary" data-a="host"/.test(home), 'Host is not the highlighted button');
+  assert.ok(at('versionHTML()') < at('id="name"'), 'version shows near the top');
+});
+
+test('deploy stamping: commit ID replaces every ?v=dev, message is escaped, version.json written', () => {
+  const out = mkdtempSync(path.join(tmpdir(), 'll-site-'));
+  try {
+    execFileSync(process.execPath, [new URL('../scripts/stamp-version.mjs', import.meta.url).pathname, out], {
+      env: { ...process.env, VERSION_SHA: 'abc1234def', VERSION_MESSAGE: 'fix "cards" <b>& more', VERSION_DATE: '2026-09-28T16:00:00Z' },
+    });
+    const html = readFileSync(path.join(out, 'index.html'), 'utf8');
+    assert.ok(!html.includes('?v=dev'));
+    assert.equal(html.match(/\?v=abc1234\b/g).length, html.match(/\?v=/g).length);
+    assert.match(html, /<meta name="app-version" content="abc1234" data-message="fix &quot;cards&quot; &lt;b&gt;&amp; more" data-date="2026-09-28T16:00:00Z">/);
+    assert.deepEqual(JSON.parse(readFileSync(path.join(out, 'version.json'), 'utf8')), { sha: 'abc1234', message: 'fix "cards" <b>& more', date: '2026-09-28T16:00:00Z' });
+    for (const f of ['style.css', 'js/main.js', 'js/ui.js', 'art/you-won.jpg', '.nojekyll']) assert.ok(existsSync(path.join(out, f)), f);
+    assert.ok(!existsSync(path.join(out, 'tests')) && !existsSync(path.join(out, 'art/error-example')));
+  } finally {
+    rmSync(out, { recursive: true, force: true });
+  }
+});

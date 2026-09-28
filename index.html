@@ -7,20 +7,21 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Love Letter</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💌</text></svg>">
-  <!-- Bump ?v= on every deploy (all five places) so phones don't mix cached old files with new ones.
-       GitHub Pages caches files for 10 minutes. -->
-  <link rel="stylesheet" href="style.css?v=2026-09-28b">
+  <!-- On deploy, .github/workflows/pages.yml replaces every ?v=dev with the commit ID and fills in
+       app-version, so phones never mix cached old files with new ones (GitHub Pages caches for 10 min). -->
+  <meta name="app-version" content="dev" data-message="" data-date="">
+  <link rel="stylesheet" href="style.css?v=dev">
   <script type="importmap">
   { "imports": {
-    "./js/engine.js": "./js/engine.js?v=2026-09-28b",
-    "./js/net.js": "./js/net.js?v=2026-09-28b",
-    "./js/ui.js": "./js/ui.js?v=2026-09-28b"
+    "./js/engine.js": "./js/engine.js?v=dev",
+    "./js/net.js": "./js/net.js?v=dev",
+    "./js/ui.js": "./js/ui.js?v=dev"
   } }
   </script>
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
   <div id="app"><p class="center muted">Loading…</p></div>
-  <script type="module" src="js/main.js?v=2026-09-28b"></script>
+  <script type="module" src="js/main.js?v=dev"></script>
 </body>
 </html>

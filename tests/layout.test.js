@@ -17,6 +17,13 @@ const CHROME = [
   '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
 ].find((p) => p && existsSync(p));
 
+// How to open a URL headlessly in each browser, with a throwaway profile.
+const BROWSERS = {
+  chrome: CHROME && ((profile, url) => [CHROME, [
+    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
+    `--user-data-dir=${profile}`, '--window-size=1400,1000', url]]),
+};
+
 const root = fileURLToPath(new URL('../', import.meta.url));
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.jpg': 'image/jpeg', '.png': 'image/png' };
 
@@ -45,18 +52,15 @@ test.after(() => { server?.closeAllConnections(); server?.close(); });
 const waiting = new Map();   // key -> resolve(measurements JSON)
 let nextKey = 0;
 
-async function measure(query, [w]) {
+async function measure(browser, query, [w]) {
   const key = String(nextKey++);
-  const profile = await mkdtemp(path.join(tmpdir(), 'll-chrome-'));
+  const profile = await mkdtemp(path.join(tmpdir(), `ll-${browser}-`));
   const result = new Promise((resolve) => waiting.set(key, resolve));
-  const child = spawn(CHROME, [
-    '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--hide-scrollbars',
-    `--user-data-dir=${profile}`, '--window-size=1400,1000',
-    `${base}/tests/layout-fixture.html?${query}&frame=${w}&key=${key}`,
-  ], { stdio: 'ignore' });
+  const [bin, args] = BROWSERS[browser](profile, `${base}/tests/layout-fixture.html?${query}&frame=${w}&key=${key}`);
+  const child = spawn(bin, args, { stdio: 'ignore' });
   let timer;
   try {
-    const json = await Promise.race([result, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('Chrome timed out')), 30000); })]);
+    const json = await Promise.race([result, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${browser} timed out`)), 45000); })]);
     const out = JSON.parse(json);
     assert.equal(out.viewport, w, 'measured at the requested width');
     return out;
@@ -80,6 +84,8 @@ function checkAligned(out, label) {
     assert.equal(c.textLen, c.expectedLen, `${label}: rule text is not truncated`);
     // Sections stack without overlapping and stay inside the card.
     const stack = [c.art, c.head, c.text, c.note].filter(Boolean);
+    // The title starts right under the image: no empty band (Firefox Android bug with a single card).
+    if (c.art) assert.ok(c.head.top - c.art.bottom <= 10, `${label}: gap between image and title is ${c.head.top - c.art.bottom}px`);
     for (let i = 1; i < stack.length; i++) assert.ok(stack[i].top >= stack[i - 1].bottom - 0.5, `${label}: sections don't overlap`);
     assert.ok(c.note.bottom <= c.card.bottom + 0.5, `${label}: last section inside the card`);
     if (c.art) {
@@ -112,18 +118,20 @@ const CASES = {
   'three cards (Chancellor)': 'ranks=6,3,9&long=1',
 };
 
+for (const [browser, launch] of Object.entries(BROWSERS)) {
+const skip = !launch && `${browser} not found`;
 for (const [vp, size] of Object.entries(VIEWPORTS)) {
   for (const [name, query] of Object.entries(CASES)) {
-    test(`layout (${vp}): ${name}`, { skip: !CHROME && 'Chrome not found' }, async () => {
-      const out = await measure(query, size);
+    test(`layout (${browser}, ${vp}): ${name}`, { skip }, async () => {
+      const out = await measure(browser, query, size);
       assert.equal(out.cards.length, query.match(/ranks=([\d,]+)/)[1].split(',').length);
       checkAligned(out, `${vp} ${name}`);
     });
   }
 
-  test(`layout (${vp}): single card keeps the same size it has in a two-card hand`, { skip: !CHROME && 'Chrome not found' }, async () => {
-    const one = await measure('ranks=5', size);
-    const two = await measure('ranks=5,6', size);
+  test(`layout (${browser}, ${vp}): single card keeps the same size it has in a two-card hand`, { skip }, async () => {
+    const one = await measure(browser, 'ranks=5', size);
+    const two = await measure(browser, 'ranks=5,6', size);
     checkAligned(one, `${vp} single`);
     near(one.cards[0].card.width, two.cards[0].card.width, 'single card width');
     near(one.cards[0].art.height, two.cards[0].art.height, 'single card art height');
@@ -131,12 +139,13 @@ for (const [vp, size] of Object.entries(VIEWPORTS)) {
   });
 }
 
-test('layout: art crops responsively (box scales with width, ratio fixed)', { skip: !CHROME && 'Chrome not found' }, async () => {
-  const phone = await measure('ranks=1,8', VIEWPORTS.mobile);
-  const desk = await measure('ranks=1,8', VIEWPORTS.desktop);
+test(`layout (${browser}): art crops responsively (box scales with width, ratio fixed)`, { skip }, async () => {
+  const phone = await measure(browser, 'ranks=1,8', VIEWPORTS.mobile);
+  const desk = await measure(browser, 'ranks=1,8', VIEWPORTS.desktop);
   assert.ok(desk.cards[0].art.width > phone.cards[0].art.width);
   for (const out of [phone, desk]) near(out.cards[0].art.width / out.cards[0].art.height, 4 / 3, 'ratio');
   // Source images are portrait, the box is landscape: cover crops instead of distorting.
   const [nw, nh] = phone.cards[0].img.natural;
   assert.ok(nw / nh < 4 / 3);
 });
+}
