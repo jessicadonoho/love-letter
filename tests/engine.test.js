@@ -429,3 +429,31 @@ test('Fuzz: random departures never give a turn to an ineligible player', () => 
     g.winnerIds.forEach((id) => assert.ok(!g.players.find((q) => q.id === id).left));
   }
 });
+
+test('Maid (1) guess event reports right and wrong guesses to everyone', () => {
+  const g = newGame(3);
+  rig(g, [[1, 4], [7], [2]]);
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 1), target: 'p1', guess: 7 });
+  for (const pid of ['p0', 'p1', 'p2']) {
+    const [ev] = evs(g, pid, 'guess');
+    assert.deepEqual([ev.actor, ev.target, ev.guess, ev.correct], ['p0', 'p1', 7, true]);
+  }
+  assert.equal(evs(g, 'p2', 'eliminated')[0].player, 'p1', 'correct guess also shows elimination');
+
+  const w = newGame(3);
+  rig(w, [[1, 4], [7], [2]]);
+  applyAction(w, 'p0', { type: 'play', cardId: cid(w, 0, 1), target: 'p1', guess: 3 });
+  const [ev] = evs(w, 'p2', 'guess');
+  assert.equal(ev.correct, false);
+  assert.equal(ev.guess, 3);
+  assert.ok(!JSON.stringify(viewFor(w, 'p2').events).includes('"rank":7'), 'wrong guess does not reveal the real card');
+  assert.equal(evs(w, 'p2', 'eliminated').length, 0);
+});
+
+test('Maid with no valid target shows no guess popup', () => {
+  const g = newGame(2);
+  rig(g, [[1, 4], [2]]);
+  g.players[1].protected = true;
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 1) });
+  assert.equal(evs(g, 'p1', 'guess').length, 0);
+});

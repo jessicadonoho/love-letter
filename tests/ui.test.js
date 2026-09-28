@@ -156,3 +156,27 @@ test('hand grid: one column per card, shared art slot, same sections on every ca
   for (const cls of ['card-head', 'ctext', 'note']) assert.equal(html.match(new RegExp(`class="${cls}"`, 'g')).length, 2);
   assert.match(handGridHTML([cards[0]]), /data-count="1" style="--cols:2"/);
 });
+
+test('Maid popup: correct and wrong guesses, from each point of view', () => {
+  const base = { type: 'guess', actor: 'a', actorName: 'Ann', target: 'b', targetName: 'Bea', guess: 7 };
+  const right = describeEvent({ ...base, correct: true }, 'c');
+  assert.match(right.title, /Maid: correct guess/);
+  assert.match(right.text, /Ann guessed Bea holds 7 King — correct! Bea is out of the round\./);
+  const wrong = describeEvent({ ...base, correct: false }, 'c');
+  assert.match(wrong.title, /Maid: wrong guess/);
+  assert.match(wrong.text, /Ann guessed Bea holds 7 King — wrong\. Bea stays in the round\./);
+  assert.match(describeEvent({ ...base, correct: false }, 'a').text, /^You guessed Bea holds/);
+  assert.match(describeEvent({ ...base, correct: false }, 'b').text, /Ann guessed you hold 7 King — wrong\. You stay in the round\./);
+  assert.match(describeEvent({ ...base, correct: true }, 'b').text, /You are out of the round/);
+  assert.notEqual(right.icon, wrong.icon, 'icons differ, but the text says the result too');
+});
+
+test('index.html uses one cache-busting version for every file', () => {
+  const html = read('index.html');
+  const versions = [...html.matchAll(/\?v=([\w-]+)/g)].map((m) => m[1]);
+  assert.ok(versions.length >= 2);
+  assert.equal(new Set(versions).size, 1, `mixed versions: ${versions}`);
+  for (const f of readdirSync(new URL('js/', root))) {
+    assert.ok(html.includes(`js/${f}?v=`), `js/${f} has no version in index.html`);
+  }
+});

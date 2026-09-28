@@ -232,8 +232,13 @@ function playCard(g, pid, a) {
     case 1:
       if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }
       say(g, `${me.name} played ${nm} on ${target.name}, naming ${cardName(a.guess)}.`);
-      if (target.hand[0].rank === Number(a.guess)) eliminate(g, target, `${nm} guessed right`);
-      else say(g, `Wrong guess.`);
+      {
+        const correct = target.hand[0].rank === Number(a.guess);
+        // Public: the guess is said out loud, and a wrong guess only reveals what they don't hold.
+        emit(g, 'guess', { actor: me.id, actorName: me.name, target: target.id, targetName: target.name, guess: Number(a.guess), correct });
+        if (correct) eliminate(g, target, `${nm} guessed right`);
+        else say(g, `Wrong guess.`);
+      }
       break;
     case 2:
       if (noEffect) { say(g, `${me.name} played ${nm} — no one to target.`); break; }

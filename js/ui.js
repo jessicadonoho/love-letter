@@ -58,6 +58,16 @@ export function describeEvent(ev, me) {
   const you = (id) => id === me;
   const nm = (id, name) => (you(id) ? 'You' : name);
   switch (ev.type) {
+    case 'guess': {
+      // e.g. "Ann guessed Bea holds 7 King." / "You guessed Bea holds…" / "Ann guessed you hold…"
+      const who = nm(ev.actor, ev.actorName);
+      const target = you(ev.target) ? 'you hold' : `${ev.targetName} holds`;
+      const guessed = `${who} guessed ${target} ${cardLabel(ev.guess)}`;
+      const title = `${cardName(1)}: ${ev.correct ? 'correct guess' : 'wrong guess'}`;
+      return ev.correct
+        ? { icon: '🎯', title, text: `${guessed} — correct! ${you(ev.target) ? 'You are' : `${ev.targetName} is`} out of the round.` }
+        : { icon: '💨', title, text: `${guessed} — wrong. ${you(ev.target) ? 'You stay' : `${ev.targetName} stays`} in the round.` };
+    }
     case 'reveal':
       return {
         icon: '🗡️', title: `${cardName(2)}: ${ev.name}'s card`,

@@ -26,6 +26,7 @@ If someone taps **Leave** during a game, they're out for the rest of that game a
    - Or, from a terminal: `git init && git add . && git commit -m "Love Letter" && git branch -M main && git remote add origin https://github.com/<you>/love-letter.git && git push -u origin main`
 3. In the repo, open **Settings → Pages**. Under "Build and deployment," choose **Deploy from a branch**, then **main** and **/ (root)**, and save.
 4. After a minute or so, the site is live at `https://<you>.github.io/love-letter/`. Everyone opens that link.
+5. **When you push an update**, change the `?v=` version in `index.html` (it appears five times, and they must all match; `npm test` checks this). GitHub Pages lets browsers cache files for 10 minutes. The new version makes phones load all the new files together instead of mixing old and new ones. After deploying, reload the page. If it still looks old, wait up to 10 minutes or do a hard refresh.
 
 Netlify Drop, Cloudflare Pages, or any other static host works too. Just upload the folder.
 
