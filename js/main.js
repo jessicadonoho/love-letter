@@ -1,6 +1,6 @@
 import {
   CARDS, cardName, MIN_PLAYERS, MAX_PLAYERS,
-  createGame, addPlayer, leavePlayer, startGame, startRound, applyAction, viewFor,
+  createGame, addPlayer, leavePlayer, reorderPlayers, startGame, startRound, applyAction, viewFor,
 } from './engine.js';
 import { Host, Client } from './net.js';
 import { esc, handGridHTML, useBarHTML, fxHTML, resultHeroHTML, confettiHTML } from './ui.js';
@@ -51,6 +51,7 @@ let client = null; // client only
 const connsById = new Map(); // host only: clientId -> conn
 
 const $app = document.getElementById('app');
+let drag = null;   // host only: a lobby row being dragged to a new seat (see "lobby order")
 
 // ---------- helpers ----------
 
@@ -294,6 +295,8 @@ function restoreFocus(key) {
 }
 
 function render() {
+  // Don't rebuild the lobby list mid-drag; render once the row is dropped.
+  if (drag) { drag.renderPending = true; return; }
   const key = focusKey();
   const bar = S.screen === 'room' ? useBar() : '';
   $app.innerHTML = (S.screen === 'home' ? homeHTML() : roomHTML())
@@ -333,7 +336,8 @@ async function checkForUpdate() {
 function homeHTML() {
   const sess = store.get(SESSION_KEY);
   const canResume = sess && Date.now() - sess.savedAt < SESSION_TTL;
-  const prefill = params.get('room') || '';
+  // Keep a typed code across re-renders (e.g. the "Enter your name first" toast).
+  const prefill = S.codeDraft ?? params.get('room') ?? '';
   return `
   <main class="home">
     <h1>Love Letter</h1>
@@ -360,7 +364,7 @@ function roomHTML() {
   const v = S.view;
   const head = `
   <header class="top">
-    <div><strong>Room ${esc(S.code)}</strong>${v && v.phase !== 'lobby' ? ` · Round ${v.round} · Deck ${v.deckCount}` : ''}</div>
+    <div><strong>Room ${esc(S.code)}</strong>${v && v.phase !== 'lobby' ? ` · Round ${v.round} · Cards in deck: ${v.deckCount}` : ''}</div>
     <div class="top-btns"><button class="chip" data-a="rules">Cards</button><button class="chip" data-a="leave">Leave</button></div>
   </header>
   ${S.status ? `<div class="status">${esc(S.status)}</div>` : ''}`;
@@ -381,8 +385,10 @@ function lobbyHTML(v) {
       <button class="chip" data-a="share" data-link="${esc(link)}">Share join link</button>
     </section>
     <h2>Players (${n}/${MAX_PLAYERS})</h2>
-    <ul class="players">
-      ${v.players.map((p) => `<li class="player row"><span>${esc(p.name)}${p.id === v.me ? ' (you)' : ''}${p.id === v.players[0].id ? ' · host' : ''}</span>
+    ${isHost && n > 1 ? '<p class="muted small">Drag ⠿ to set the turn order.</p>' : ''}
+    <ul class="players lobby-order">
+      ${v.players.map((p, i) => `<li class="player row" data-id="${esc(p.id)}">
+        <span class="lobby-name">${isHost && n > 1 ? `<button class="drag-handle" data-a="drag" data-id="${esc(p.id)}" aria-label="Move ${esc(p.name)} (seat ${i + 1} of ${n}). Use the up and down arrow keys." title="Drag to reorder">⠿</button>` : ''}<span class="seat">${i + 1}.</span> ${esc(p.name)}${p.id === v.me ? ' (you)' : ''}${p.id === v.hostId ? ' · host' : ''}</span>
         ${dot(p.id)}${isHost && p.id !== v.me ? `<button class="chip" data-a="kick" data-id="${esc(p.id)}">Remove</button>` : ''}</li>`).join('')}
     </ul>
     ${isHost
@@ -413,6 +419,17 @@ function bannerHTML(v) {
   return `<div class="banner ${v.myTurn ? 'mine' : ''}">${text}</div>`;
 }
 
+// Discard piles show small pictures of each card. To go back to the plain text chips
+// ("4 Handmaid"), set this to false; the thumbnail styles live under "discard thumbnails" in style.css.
+const DISCARD_THUMBS = true;
+
+function discardHTML(r) {
+  if (!DISCARD_THUMBS) return `<span class="mini r${r}">${r} ${cardName(r)}</span>`;
+  const label = `${r} ${cardName(r)}`;
+  return `<span class="mini-card r${r}" role="img" aria-label="${esc(label)}" title="${esc(label)}">${
+    ART[r] ? `<img src="${esc(ART[r])}" alt="">` : ''}<span class="mini-label"><b>${r}</b> ${cardName(r)}</span></span>`;
+}
+
 const SHIELD = '<span class="badge shield" role="img" aria-label="Protected until next turn" title="Protected until next turn"><span aria-hidden="true">🛡️</span> Protected</span>';
 
 function playersHTML(v) {
@@ -427,7 +444,7 @@ function playersHTML(v) {
         ${isHost && p.id !== v.me && !p.left && !S.online.includes(p.id) ? `<button class="chip" data-a="kick" data-id="${esc(p.id)}">Remove</button>` : ''}
         <span class="tokens" title="Tokens">${'♥'.repeat(p.tokens)}<span class="muted">${'♡'.repeat(Math.max(0, (v.tokensToWin || 0) - p.tokens))}</span></span>
       </div>
-      <div class="discards">${p.discards.length ? p.discards.map((r) => `<span class="mini r${r}">${r} ${cardName(r)}</span>`).join('') : '<span class="muted">no discards</span>'}</div>
+      <div class="discards">${p.discards.length ? p.discards.map(discardHTML).join('') : '<span class="muted">no discards</span>'}</div>
     </li>`).join('')}
   </ul>
   ${v.faceUp.length ? `<div class="muted small">Set aside face up: ${v.faceUp.map((r) => `${r} ${cardName(r)}`).join(', ')}</div>` : ''}`;
@@ -482,9 +499,9 @@ function actionPanelHTML(v, c) {
     return '';   // the bottom bar explains that the card will have no effect
   } else if (needsTarget) {
     body = `<div class="label">${c.rank === 5 ? 'Choose a player (can be you)' : 'Choose a player'}</div>
-      <div class="opts">${c.targets.map((id) => `<button class="opt ${S.target === id ? 'on' : ''}" data-a="target" data-id="${esc(id)}">${esc(id === v.me ? 'Me' : nameOf(id))}</button>`).join('')}</div>`;
+      <div class="opts targets ${S.target ? 'chosen' : ''}">${c.targets.map((id) => `<button class="opt ${S.target === id ? 'on' : ''}" data-a="target" data-id="${esc(id)}" aria-pressed="${S.target === id}">${S.target === id ? '<span aria-hidden="true">✓ </span>' : ''}${esc(id === v.me ? 'Me' : nameOf(id))}</button>`).join('')}</div>`;
     if (c.rank === 1) {
-      body += `<div class="label">Guess their card</div><div class="opts guess">${
+      body += `<div class="label">Guess their card <span class="muted small">(not ${cardName(1)} · number in the whole deck)</span></div><div class="opts guess">${
         // (n) = copies in the whole deck, not how many are left.
         [0, 2, 3, 4, 5, 6, 7, 8, 9].map((r) => `<button class="opt ${S.guess === r ? 'on' : ''}" data-a="guess" data-r="${r}" aria-label="${r} ${cardName(r)}, ${CARDS[r].count} in the deck">${r} ${cardName(r)} <span class="muted">(${CARDS[r].count})</span></button>`).join('')}</div>`;
     }
@@ -596,11 +613,57 @@ function rulesHTML() {
 
 $app.addEventListener('input', (e) => {
   if (e.target.id === 'name') { S.name = e.target.value; store.set('name', S.name); }
-  if (e.target.id === 'code') e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, '');
+  if (e.target.id === 'code') { e.target.value = e.target.value.toUpperCase().replace(/[^A-Z]/g, ''); S.codeDraft = e.target.value; }
 });
+
+// ---------- lobby order (host only) ----------
+// Drag a row by its ⠿ handle (mouse or touch), or focus the handle and use the arrow keys.
+
+function setOrder(ids) {
+  const r = reorderPlayers(game, ids);
+  if (!r.ok) toast(r.error);
+  broadcast();
+}
+
+$app.addEventListener('pointerdown', (e) => {
+  const h = e.target.closest('.drag-handle');
+  if (!h || S.role !== 'host' || S.view?.phase !== 'lobby') return;
+  e.preventDefault();
+  h.focus();
+  h.setPointerCapture(e.pointerId);
+  const li = h.closest('li');
+  li.classList.add('dragging');
+  drag = { li, list: li.parentElement, pointerId: e.pointerId, start: [...li.parentElement.children].indexOf(li) };
+});
+$app.addEventListener('pointermove', (e) => {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  // Drop the row before the first row whose middle is below the pointer.
+  const others = [...drag.list.children].filter((x) => x !== drag.li);
+  const before = others.find((x) => { const r = x.getBoundingClientRect(); return e.clientY < r.top + r.height / 2; });
+  if (before) { if (drag.li.nextElementSibling !== before) drag.list.insertBefore(drag.li, before); }
+  else if (drag.list.lastElementChild !== drag.li) drag.list.append(drag.li);
+});
+function endDrag(e) {
+  if (!drag || e.pointerId !== drag.pointerId) return;
+  const { li, list, start } = drag;
+  li.classList.remove('dragging');
+  drag = null;
+  const ids = [...list.children].map((x) => x.dataset.id);
+  if ([...list.children].indexOf(li) !== start) setOrder(ids); else render();
+}
+$app.addEventListener('pointerup', endDrag);
+$app.addEventListener('pointercancel', endDrag);
 
 $app.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && e.target.id === 'code') $app.querySelector('[data-a="join"]').click();
+  if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.target.classList.contains('drag-handle') && S.role === 'host') {
+    e.preventDefault();
+    const ids = S.view.players.map((p) => p.id);
+    const i = ids.indexOf(e.target.dataset.id), j = i + (e.key === 'ArrowUp' ? -1 : 1);
+    if (i < 0 || j < 0 || j >= ids.length) return;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    setOrder(ids);   // the re-render keeps focus on this player's handle
+  }
 });
 
 $app.addEventListener('click', async (e) => {
@@ -649,7 +712,13 @@ $app.addEventListener('click', async (e) => {
       if (S.submitting) break;
       const id = Number(el.dataset.id);
       if (v.phase === 'chancellor') { S.keep = id; S.bottom = []; }
-      else { if (S.sel !== id) { S.target = null; S.guess = null; } S.sel = id; }
+      else {
+        if (S.sel !== id) { S.target = null; S.guess = null; }
+        S.sel = id;
+        // Only one possible player? Choose them automatically.
+        const c = v.hand.find((h) => h.id === id);
+        if (c && NEEDS_TARGET.includes(c.rank) && c.targets.length === 1) S.target = c.targets[0];
+      }
       render(); break;
     }
     case 'target': if (!S.submitting) { S.target = el.dataset.id; render(); } break;

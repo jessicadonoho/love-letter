@@ -50,6 +50,17 @@ export function addPlayer(g, id, name) {
   if (g.phase !== 'lobby') return { ok: false, error: 'Game already started.' };
   if (g.players.length >= MAX_PLAYERS) return { ok: false, error: 'Room is full (6 players max).' };
   g.players.push({ id, name: cleanName(name), tokens: 0, hand: [], discards: [], alive: true, protected: false, left: false });
+  if (!g.hostId) g.hostId = id;   // the first player is the host, wherever they end up in the order
+  return { ok: true };
+}
+
+/** Lobby only: set the seating (turn) order. `ids` must list every player exactly once. */
+export function reorderPlayers(g, ids) {
+  if (g.phase !== 'lobby') return { ok: false, error: 'The order can only change before the game starts.' };
+  if (!Array.isArray(ids) || ids.length !== g.players.length || new Set(ids).size !== ids.length) return { ok: false, error: 'Invalid order.' };
+  const next = ids.map((id) => byId(g, id));
+  if (next.some((p) => !p)) return { ok: false, error: 'Invalid order.' };
+  g.players = next;
   return { ok: true };
 }
 
@@ -314,6 +325,7 @@ function playCard(g, pid, a) {
       break;
     case 8:
       say(g, `${me.name} played Countess.`);
+      emit(g, 'countess', { actor: me.id, name: me.name }, g.players.filter((p) => p !== me).map((p) => p.id));
       break;
     case 9:
       say(g, `${me.name} played the Princess!`);
@@ -413,6 +425,7 @@ export function viewFor(g, pid) {
   const reveal = g.phase === 'roundOver' || g.phase === 'gameOver';
   return {
     me: pid,
+    hostId: g.hostId ?? g.players[0]?.id,
     phase: g.phase,
     round: g.round,
     tokensToWin: TOKENS_TO_WIN[g.players.length] || null,

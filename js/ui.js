@@ -114,6 +114,12 @@ export function describeEvent(ev, me) {
         };
       }
       return { icon: '👑', title: `${cardName(7)}: ${ev.actorName} ⇄ ${ev.targetName}`, text: `${ev.actorName} used the ${cardName(7)} and traded hands with ${ev.targetName}.` };
+    case 'countess':
+      // The played card is face up, so showing it gives nothing away.
+      return {
+        icon: '💃', card: 8, title: `${ev.name} discarded the ${cardName(8)}`,
+        text: `The ${cardName(8)} must be played when its holder also has a King, ${cardName(5)}, ${cardName(6)}, or Princess — but ${ev.name} may also have played it by choice.`,
+      };
     case 'chancellor': {
       // Shown to the other players only; card backs stand in for the unknown cards.
       if (!ev.count) return { icon: '📜', title: `${cardName(6)}: no effect`, text: `The deck was empty, so ${ev.name} drew nothing.` };

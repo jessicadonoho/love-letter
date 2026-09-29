@@ -1,7 +1,7 @@
 // Run with: node --test tests/
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createGame, addPlayer, startGame, startRound, applyAction, viewFor, leavePlayer, CARDS, TOKENS_TO_WIN } from '../js/engine.js';
+import { createGame, addPlayer, reorderPlayers, startGame, startRound, applyAction, viewFor, leavePlayer, CARDS, TOKENS_TO_WIN } from '../js/engine.js';
 
 function seeded(seed) {
   return () => { seed = (seed * 1664525 + 1013904223) % 4294967296; return seed / 4294967296; };
@@ -176,6 +176,28 @@ test('Players who are out get no popups for the rest of the round', () => {
   assert.equal(evs(g, 'p0', 'discard').length, 1, 'players still in get them');
   startRound(g);
   assert.equal(g.players[1].outSeq, null, 'reset for the next round');
+});
+
+test('Host can reorder players in the lobby only; host stays marked', () => {
+  const g = createGame();
+  for (const id of ['h', 'a', 'b']) addPlayer(g, id, id.toUpperCase());
+  assert.ok(reorderPlayers(g, ['b', 'h', 'a']).ok);
+  assert.deepEqual(g.players.map((p) => p.id), ['b', 'h', 'a']);
+  assert.equal(viewFor(g, 'a').hostId, 'h', 'host is not whoever is first');
+  assert.equal(reorderPlayers(g, ['b', 'h']).ok, false, 'must list everyone');
+  assert.equal(reorderPlayers(g, ['b', 'b', 'a']).ok, false, 'no duplicates');
+  assert.equal(reorderPlayers(g, ['b', 'h', 'zz']).ok, false, 'no strangers');
+  startGame(g, seeded(3));
+  assert.equal(reorderPlayers(g, ['h', 'a', 'b']).ok, false, 'locked once the game starts');
+  assert.deepEqual(g.players.map((p) => p.id), ['b', 'h', 'a'], 'seating order is kept');
+});
+
+test('Countess event goes to the other players', () => {
+  const g = newGame(3);
+  rig(g, [[8, 1], [2], [3]]);
+  applyAction(g, 'p0', { type: 'play', cardId: cid(g, 0, 8) });
+  assert.equal(evs(g, 'p0', 'countess').length, 0);
+  for (const pid of ['p1', 'p2']) assert.deepEqual(evs(g, pid, 'countess').map((e) => e.name), ['P0']);
 });
 
 test('Chancellor on an empty deck emits a no-effect event', () => {

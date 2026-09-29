@@ -165,6 +165,13 @@ test('Maid guess buttons show how many of each card are in the whole deck', () =
   assert.equal(CARDS[9].count, 1);
 });
 
+test('Countess popup shows the card and explains why it may have been played', () => {
+  const html = fxHTML({ type: 'countess', actor: 'a', name: 'Ann' }, 'b', 0, { artFor: (r) => `art/${r}.jpg` });
+  assert.match(html, /Ann discarded the Countess/);
+  assert.match(html, /King, Viscount, Chancellor, or Princess/);
+  assert.match(html, /<div class="card r8 has-art/);
+});
+
 test('protection popup and shield indicator label', () => {
   const html = fxHTML({ type: 'protected', player: 'a', name: 'Ann' }, 'b');
   assert.match(html, /🛡️/);
